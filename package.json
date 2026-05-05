@@ -1,0 +1,19 @@
+{
+  "name": "shopify-price-match-batch-mvp",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check-prices": "tsx src/checkPrices.ts",
+    "apply-approved": "tsx src/applyApproved.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
