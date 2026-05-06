@@ -1,0 +1,952 @@
+UPPGIFT: BYGG UI RUNT VÅRT BEFINTLIGA PRISMATCHNINGSPROJEKT
+
+Projekt att utgå från:
+Det här UI:t ska byggas ovanpå det befintliga projektet vi redan har tagit fram lokalt:
+
+price-match-batch-mvp.zip
+
+Projektet fungerar redan som en batch-MVP via terminal/CSV. Det kan:
+
+1. Hämta Shopify access token via nya Shopify Dev Dashboard-flödet.
+2. Hämta aktuellt Shopify-pris och eget Shopify-lager.
+3. Läsa lokala produkter och konkurrentlänkar.
+4. Hämta konkurrentpriser från verkliga produkt-URL:er.
+5. Välja lägsta giltiga konkurrentpris per produkt.
+6. Räkna föreslaget nytt pris.
+7. Kontrollera marginalregel.
+8. Skapa prisrapport.
+9. Uppdatera Shopify först efter manuell godkänning.
+
+UI:t ska alltså inte byggas som ett separat låtsasprojekt. Det ska hänvisa till, återanvända och bygga vidare på logiken i vårt befintliga projekt.
+
+
+============================================================
+1. ABSOLUT KRAV: INGEN MOCKDATA, FAKE-DATA ELLER HÅRDKODAD DATA
+============================================================
+
+Detta är det viktigaste kravet.
+
+Utvecklaren får INTE använda:
+
+- mockdata
+- fake-data
+- demoprodukter
+- hårdkodade produkter
+- hårdkodade priser
+- hårdkodade Shopify-ID:n
+- hårdkodade konkurrent-URL:er
+- hårdkodad butik
+- fallback-data om Shopify misslyckas
+- exempeldata som visas i UI som om det vore riktig data
+- generiska demo-cards med exempelprodukter
+
+All data i UI:t ska komma från någon av dessa riktiga källor:
+
+1. Shopify GraphQL Admin API
+2. Lokal databas där användaren själv har sparat regler, konkurrentlänkar och körningshistorik
+3. Verkliga scraper-resultat från riktiga konkurrent-URL:er
+
+Om något saknas eller misslyckas ska UI:t visa ett riktigt felmeddelande.
+
+Exempel på korrekta felmeddelanden:
+
+- Shopify-produkter kunde inte hämtas.
+- Ingen scraper finns för domänen cdon.se.
+- Konkurrentpris kunde inte hittas på sidan.
+- Inga produkter är synkade ännu.
+- Produkten saknar konkurrentlänkar.
+
+Det är INTE acceptabelt att visa:
+
+- Demo Product 1
+- Example price 999 kr
+- Mock competitor
+- Test URL
+- Fake Shopify product
+
+
+============================================================
+2. SYFTE MED UI:T
+============================================================
+
+Målet är att användaren inte längre ska behöva jobba direkt i CSV-filer.
+
+UI:t ska vara den centrala platsen för:
+
+- synk av Shopify-produkter
+- visning av butikens produkter
+- redigering av prisregler per produkt
+- hantering av konkurrent-URL:er per produkt
+- körning av prismatchning
+- visning av rapport/rekommendationer
+- manuell godkänning av prisändringar
+- uppdatering av godkända priser till Shopify
+- historik och felsökning
+
+
+============================================================
+3. TEKNISK GRUND
+============================================================
+
+Rekommenderad stack:
+
+Frontend/UI:
+- React, Next.js eller liknande
+- Enkel adminpanel
+- Tabeller, filter, sök, statusar och knappar
+
+Backend:
+- Node.js + TypeScript
+- Express, Fastify, Next API routes eller liknande
+
+Databas:
+- SQLite först
+- PostgreSQL senare om systemet ska hostas eller skalas
+
+Projektet ska byggas lokalt först.
+
+Det befintliga projektet använder redan Node/TypeScript. Återanvänd så mycket logik som möjligt från:
+
+- Shopify-tokenflöde
+- Shopify GraphQL-anrop
+- scraper-logik
+- prisregler
+- rapportlogik
+- godkännandeflöde
+
+
+============================================================
+4. SHOPIFY-AUTENTISERING: NYA DEV DASHBOARD-FLÖDET
+============================================================
+
+Appen ska stödja nya Shopify Dev Dashboard-flödet.
+
+Miljövariabler:
+
+SHOPIFY_SHOP_DOMAIN=fristedt-handel-ab.myshopify.com
+SHOPIFY_CLIENT_ID=...
+SHOPIFY_CLIENT_SECRET=...
+SHOPIFY_API_VERSION=2026-04
+PRICE_FETCH_CONCURRENCY=5
+SHOPIFY_UPDATE_CONCURRENCY=1
+
+Viktigt:
+
+- Client Secret får aldrig exponeras i frontend.
+- Client Secret får aldrig skickas till browsern.
+- Client Secret får aldrig commitas.
+- .env ska ligga i .gitignore.
+
+Backend ska hämta access token via:
+
+POST https://{shop}.myshopify.com/admin/oauth/access_token
+
+Body:
+
+grant_type=client_credentials
+client_id=SHOPIFY_CLIENT_ID
+client_secret=SHOPIFY_CLIENT_SECRET
+
+Svaret innehåller en access token.
+
+Den token ska backend använda mot Shopify GraphQL Admin API:
+
+https://{shop}.myshopify.com/admin/api/2026-04/graphql.json
+
+Header:
+
+X-Shopify-Access-Token: {access_token}
+
+
+============================================================
+5. SHOPIFY SCOPES
+============================================================
+
+Appen ska ha minst:
+
+- read_products
+- write_products
+- read_inventory
+
+Syfte:
+
+read_products:
+- hämta produkter, varianter, SKU, titel, pris, barcode/EAN
+
+write_products:
+- uppdatera variantpris i Shopify
+
+read_inventory:
+- kontrollera eget Shopify-lager innan prismatchning
+
+
+============================================================
+6. PRODUKTSYNK FRÅN SHOPIFY
+============================================================
+
+UI:t ska ha en knapp:
+
+Synka produkter från Shopify
+
+När användaren klickar på den ska systemet hämta hela butikens produkter/varianter via Shopify GraphQL Admin API.
+
+För varje Shopify-variant ska systemet spara lokalt:
+
+- shopify_product_id
+- shopify_variant_id
+- sku
+- produktnamn
+- vendor/säljare om tillgängligt
+- product_type om tillgängligt
+- nuvarande Shopify-pris
+- eget Shopify-lager / inventory_quantity
+- barcode/EAN om tillgängligt
+- Shopify-status/active
+- senast_synkad
+
+Viktigt:
+
+Shopify är källan för:
+
+- produktnamn
+- SKU
+- variant-ID
+- produkt-ID
+- pris
+- lager
+- barcode/EAN
+
+Lokal databas är källan för:
+
+- inköpspris
+- minsta marginal
+- undercut
+- om produkten ska prismatchas
+- konkurrent-URL:er
+- historik
+- rekommendationer
+
+
+============================================================
+7. LOKAL DATABAS
+============================================================
+
+Skapa ungefär dessa tabeller.
+
+
+products
+--------
+
+id
+shopify_product_id
+shopify_variant_id
+sku
+title
+vendor
+product_type
+barcode
+shopify_price
+inventory_quantity
+active
+last_synced_at
+created_at
+updated_at
+
+
+pricing_rules
+-------------
+
+En rad per produkt/variant.
+
+id
+product_id
+cost_price
+min_margin_percent
+undercut_amount
+enabled
+created_at
+updated_at
+
+Reglerna ska kunna redigeras per produkt i UI.
+
+
+competitor_links
+----------------
+
+En produkt kan ha många konkurrentlänkar.
+
+id
+product_id
+url
+domain
+enabled
+created_at
+updated_at
+last_checked_at
+last_price
+last_status
+last_error
+
+Domän ska räknas ut automatiskt från URL:en.
+
+Exempel:
+
+https://cdon.se/... -> cdon.se
+https://hemmabutiken.se/... -> hemmabutiken.se
+
+
+price_runs
+----------
+
+En körning av prismatchningen.
+
+id
+started_at
+finished_at
+status
+total_products
+products_skipped_no_stock
+total_links_checked
+success_count
+error_count
+created_at
+
+
+price_snapshots
+---------------
+
+Ett resultat per konkurrentlänk.
+
+id
+run_id
+product_id
+competitor_link_id
+url
+domain
+price
+status
+error
+fetched_at
+
+
+price_recommendations
+---------------------
+
+En rad per produkt efter en körning.
+
+id
+run_id
+product_id
+shopify_price_before
+cheapest_competitor_domain
+cheapest_competitor_url
+cheapest_competitor_price
+suggested_price
+cost_price
+min_margin_percent
+min_allowed_price
+margin_after_percent
+status
+reason
+approved
+created_at
+
+
+shopify_updates
+---------------
+
+Resultat från faktiska Shopify-uppdateringar.
+
+id
+recommendation_id
+product_id
+shopify_variant_id
+old_price
+new_price
+status
+error
+updated_at
+
+
+============================================================
+8. UI-SIDOR
+============================================================
+
+
+SIDA 1: DASHBOARD
+-----------------
+
+Visa:
+
+- antal Shopify-produkter
+- antal produkter med eget lager > 0
+- antal produkter utan inköpspris
+- antal produkter utan konkurrentlänkar
+- senaste körning
+- antal OK för godkännande
+- antal blockerade
+- antal fel
+
+Knappar:
+
+- Synka produkter från Shopify
+- Kör prismatchning
+- Visa senaste rapport
+
+
+SIDA 2: PRODUKTER
+-----------------
+
+Produktlista med sök och filter.
+
+Kolumner:
+
+- SKU
+- Produktnamn
+- Shopify-pris
+- Eget lager
+- Inköpspris
+- Min marginal %
+- Undercut kr
+- Antal konkurrentlänkar
+- Senast kollad
+- Status
+
+Filter:
+
+- sök SKU
+- sök produktnamn
+- har lager
+- saknar inköpspris
+- saknar konkurrentlänkar
+- har blockerad rekommendation
+- OK för godkännande
+
+Varje rad ska ha:
+
+- öppna/redigera
+
+
+SIDA 3: PRODUKTDETALJ
+---------------------
+
+För en produkt ska UI visa Shopify-data:
+
+- produktnamn
+- SKU
+- Shopify product ID
+- Shopify variant ID
+- nuvarande Shopify-pris
+- eget Shopify-lager
+- vendor
+- barcode/EAN
+- senast synkad
+
+Regler som ska kunna redigeras:
+
+- inköpspris
+- min marginal %
+- undercut kr
+- regel aktiv ja/nej
+
+Konkurrentlänkar:
+
+- url
+- domän
+- aktiv ja/nej
+- senast hämtat pris
+- senast status
+- senast fel
+- knapp: Lägg till URL
+- knapp: Ta bort URL
+- knapp: Testa URL
+
+När en ny URL läggs till ska systemet automatiskt identifiera domänen.
+
+Om domänen saknar scraper ska UI visa:
+
+Ingen scraper finns för denna domän.
+
+
+SIDA 4: KÖRNINGAR / HISTORIK
+----------------------------
+
+Visa tidigare körningar:
+
+- starttid
+- sluttid
+- status
+- antal produkter
+- antal länkar
+- antal OK
+- antal blockerade
+- antal fel
+
+Klick på en körning öppnar rapporten för den körningen.
+
+
+SIDA 5: RAPPORT / REKOMMENDATIONER
+-----------------------------------
+
+Visa resultat per produkt.
+
+Kolumner:
+
+- SKU
+- Produktnamn
+- Shopify-pris nu
+- Eget lager
+- Billigaste konkurrent
+- Billigaste konkurrentpris
+- Föreslaget pris
+- Inköpspris
+- Marginal efter
+- Minsta tillåtna pris
+- Status
+- Orsak
+- Godkänn
+
+Knappar:
+
+- Godkänn markerade
+- Godkänn alla OK
+- Avmarkera alla
+- Uppdatera godkända i Shopify
+
+En blockerad rad ska inte kunna godkännas.
+
+
+SIDA 6: SCRAPER-STATUS
+----------------------
+
+Visa domäner som stöds.
+
+Nuvarande domäner i vårt projekt:
+
+- hemmabutiken.se
+- cdon.se
+- themobilestore.se
+
+För varje domän:
+
+- scraper finns: ja/nej
+- senast testad
+- senast status
+- antal lyckade
+- antal fel
+
+
+============================================================
+9. PRISMATCHNINGSREGLER
+============================================================
+
+Reglerna ska köras i denna ordning.
+
+
+REGEL 1: ENDAST AKTIVA PRODUKTER
+--------------------------------
+
+Om produkten eller regeln är avstängd ska den inte prismatchas.
+
+Status:
+
+SKIPPAD_INAKTIV
+
+
+REGEL 2: KONTROLLERA EGET SHOPIFY-LAGER FÖRST
+---------------------------------------------
+
+Om eget Shopify-lager är 0 eller mindre ska produkten skippas.
+
+Status:
+
+SKIPPAD_EGET_LAGER_0
+
+Orsak:
+
+Produkten finns inte i lager i din Shopify-butik. Konkurrentlänkar hämtades inte.
+
+Viktigt:
+
+Om eget lager är 0 ska inga konkurrent-URL:er hämtas för den produkten.
+
+
+REGEL 3: INKÖPSPRIS KRÄVS
+-------------------------
+
+Om produkten saknar inköpspris ska den inte prismatchas.
+
+Status:
+
+SAKNAR_INKOPSPRIS
+
+Orsak:
+
+Inköpspris saknas. Kan inte räkna marginal.
+
+
+REGEL 4: MINST EN AKTIV KONKURRENTLÄNK KRÄVS
+--------------------------------------------
+
+Om produkten saknar aktiva konkurrentlänkar ska den inte prismatchas.
+
+Status:
+
+SAKNAR_LANKAR
+
+
+REGEL 5: HÄMTA ENDAST PRIS FRÅN KONKURRENTER
+--------------------------------------------
+
+Scrapers ska endast hämta pris.
+
+De ska INTE hämta, tolka eller använda konkurrentens lagerstatus.
+
+Konkurrentens lagerstatus ska alltså INTE finnas med i:
+
+- datamodell
+- regler
+- UI
+- scraper-resultat
+- rapporter
+
+
+REGEL 6: VÄLJ BILLIGASTE GILTIGA KONKURRENTSPRIS
+------------------------------------------------
+
+För varje produkt:
+
+1. Hämta pris från alla aktiva konkurrentlänkar.
+2. Ignorera misslyckade hämtningar.
+3. Ignorera pris null, 0 eller negativa priser.
+4. Välj lägsta giltiga pris.
+
+Om inget giltigt pris finns:
+
+Status:
+
+INGET_PRIS
+
+Orsak:
+
+Inget giltigt konkurrentpris kunde hämtas.
+
+
+REGEL 7: RÄKNA FÖRESLAGET PRIS
+------------------------------
+
+Formel:
+
+föreslaget_pris = billigaste_konkurrentpris - undercut_kr
+
+Exempel:
+
+Billigaste konkurrent: 1740 kr
+undercut_kr: 1 kr
+föreslaget pris: 1739 kr
+
+
+REGEL 8: MINSTA MARGINAL
+------------------------
+
+Formel:
+
+minsta_tillatna_pris = inkopspris / (1 - min_marginal_procent / 100)
+
+Om:
+
+föreslaget_pris < minsta_tillatna_pris
+
+ska raden blockeras.
+
+Status:
+
+BLOCKERAD_MARGINAL
+
+Orsak:
+
+Föreslaget pris går under minsta tillåtna marginal.
+
+Detta är den enda prisblockeringen som ska finnas.
+
+
+REGEL 9: OM PRISET REDAN ÄR SAMMA
+---------------------------------
+
+Om föreslaget pris är samma som nuvarande Shopify-pris:
+
+Status:
+
+INGEN_ANDRING
+
+Orsak:
+
+Shopify-priset ligger redan på föreslaget pris.
+
+
+REGEL 10: OK FÖR GODKÄNNANDE
+----------------------------
+
+En produkt får status OK om:
+
+- produkten är aktiv
+- produkten har eget Shopify-lager > 0
+- inköpspris finns
+- minst en aktiv konkurrentlänk finns
+- minst ett giltigt konkurrentpris hittades
+- föreslaget pris inte går under minsta marginal
+- föreslaget pris skiljer sig från Shopify-priset
+
+Status:
+
+OK
+
+
+============================================================
+10. INGEN MAX-SÄNKNING-REGEL
+============================================================
+
+Det ska INTE finnas någon regel som blockerar baserat på hur många procent priset sänks från nuvarande Shopify-pris.
+
+Den regeln har medvetet tagits bort från vårt projekt.
+
+Enda prisblockeringen ska vara:
+
+BLOCKERAD_MARGINAL
+
+
+============================================================
+11. SHOPIFY-UPPDATERING
+============================================================
+
+Shopify ska inte uppdateras direkt efter prishämtning.
+
+Rätt flöde:
+
+1. Kör prismatchning.
+2. Skapa rekommendationer.
+3. Användaren granskar rapporten.
+4. Användaren godkänner rader.
+5. Systemet uppdaterar bara godkända OK-rader.
+
+Shopify-uppdatering ska bara ske om:
+
+recommendation.status = OK
+approved = true
+
+Om raden är blockerad, INGEN_ANDRING, SAKNAR_INKOPSPRIS, SKIPPAD_EGET_LAGER_0, INGET_PRIS eller annan icke-OK-status får den inte uppdateras.
+
+
+============================================================
+12. PRISUPPDATERING VIA SHOPIFY GRAPHQL
+============================================================
+
+Prisuppdatering ska ske via Shopify GraphQL Admin API.
+
+Mutation:
+
+productVariantsBulkUpdate
+
+Den ska uppdatera variantens price.
+
+Uppdateringen ska loggas i lokal databas:
+
+- old_price
+- new_price
+- status
+- error
+- updated_at
+
+
+============================================================
+13. SCRAPERS
+============================================================
+
+Det ska finnas en scraper per konkurrentdomän.
+
+Nuvarande domäner i vårt projekt:
+
+- hemmabutiken.se
+- cdon.se
+- themobilestore.se
+
+Scraper-interface:
+
+type ScrapeResult = {
+  price: number | null;
+  status: "success" | "failed";
+  error?: string;
+};
+
+Det ska INTE finnas:
+
+- inStock
+- availability
+- stockStatus
+- konkurrentlager
+
+Domänstyrning:
+
+hemmabutiken.se -> hemmabutiken scraper
+cdon.se -> cdon scraper
+themobilestore.se -> themobilestore scraper
+
+Om en URL har en domän utan scraper:
+
+status: failed
+error: "Ingen scraper finns för domänen: example.se"
+
+
+============================================================
+14. KÖRNINGSFLÖDE I UI
+============================================================
+
+När användaren klickar:
+
+Kör prismatchning
+
+ska backend göra:
+
+1. Hämta senaste Shopify-pris och eget Shopify-lager för alla aktiva produkter.
+2. Skippa produkter med eget lager <= 0.
+3. Skippa produkter utan inköpspris.
+4. Skippa produkter utan aktiva länkar.
+5. Skapa scraping-jobb endast för produkter som passerat filter.
+6. Kör scraping med begränsad concurrency.
+7. Spara price_snapshots.
+8. Skapa price_recommendations.
+9. Visa rapport i UI.
+
+Progress ska visas i UI:
+
+- Hämtar Shopify-produkter...
+- Kontrollerar eget lager...
+- Hämtar konkurrentpriser 45/300...
+- Skapar rekommendationer...
+- Klart.
+
+
+============================================================
+15. CONCURRENCY
+============================================================
+
+Inställningar ska ligga i backend/env:
+
+PRICE_FETCH_CONCURRENCY=5
+SHOPIFY_UPDATE_CONCURRENCY=1
+
+Betydelse:
+
+PRICE_FETCH_CONCURRENCY:
+Hur många konkurrent-URL:er som hämtas samtidigt.
+
+SHOPIFY_UPDATE_CONCURRENCY:
+Hur många Shopify-prisuppdateringar som görs samtidigt.
+
+Default i början:
+
+PRICE_FETCH_CONCURRENCY=5
+SHOPIFY_UPDATE_CONCURRENCY=1
+
+
+============================================================
+16. FELHANTERING
+============================================================
+
+Alla fel ska sparas och visas.
+
+Exempel på fel:
+
+- Shopify-token kunde inte hämtas
+- Shopify-produkt kunde inte hämtas
+- read_inventory scope saknas
+- write_products scope saknas
+- domän saknar scraper
+- pris kunde inte hittas på sidan
+- HTML-sidan svarade 403/404/500
+- timeout
+- ogiltig URL
+
+Fel får inte döljas.
+
+Fel får inte ersättas med mockdata.
+
+
+============================================================
+17. EXPORT / IMPORT
+============================================================
+
+UI:t får gärna kunna exportera:
+
+- produkter
+- konkurrentlänkar
+- senaste rapport
+
+som CSV.
+
+Men CSV ska inte längre vara huvudgränssnittet. UI och lokal databas ska vara huvudsystemet.
+
+
+============================================================
+18. ACCEPTANCE CRITERIA
+============================================================
+
+Projektet är godkänt när detta fungerar:
+
+1. UI:t kan startas lokalt.
+2. Det finns ingen mockdata, fake-data, demodata eller hårdkodad produktdata.
+3. Jag kan klicka "Synka produkter från Shopify".
+4. Produkter och varianter hämtas från Shopify GraphQL och sparas lokalt.
+5. Inga fake-produkter visas om Shopify misslyckas.
+6. Jag kan öppna en produkt och redigera inköpspris.
+7. Jag kan öppna en produkt och redigera min marginal %.
+8. Jag kan öppna en produkt och redigera undercut kr.
+9. Jag kan lägga till flera konkurrent-URL:er per produkt.
+10. Systemet väljer scraper automatiskt baserat på domän.
+11. Systemet hämtar endast konkurrentpris, inte konkurrentlager.
+12. Konkurrentlager finns inte i UI, datamodell, regler eller scraper-resultat.
+13. Produkten skippas om mitt eget Shopify-lager är 0.
+14. Produkten blockeras om föreslaget pris går under min marginal.
+15. Det finns ingen max-sänkning-regel.
+16. Jag kan köra prismatchning och se en rapport.
+17. Jag kan godkänna OK-rader manuellt.
+18. Shopify uppdateras bara för godkända OK-rader.
+19. Alla Shopify-uppdateringar loggas.
+20. Alla scraper-fel loggas och visas.
+21. Inga credentials exponeras i frontend.
+22. .env ligger i .gitignore.
+23. Om databasen är tom visas tomt läge, inte exempeldata.
+24. Om Shopify misslyckas visas fel, inte fallbackdata.
+25. Om en produkt saknar konkurrentlänkar visas detta tydligt.
+26. Om en domän saknar scraper visas detta tydligt.
+
+
+============================================================
+19. VIKTIG SLUTREGEL
+============================================================
+
+Detta ska byggas som ett riktigt internt affärsverktyg, inte som ett snyggt UI med låtsasdata.
+
+Om Shopify inte fungerar ska UI visa fel.
+
+Om databasen är tom ska UI visa tomt läge.
+
+Om ingen produkt är synkad ska UI säga:
+
+Inga produkter synkade ännu. Klicka på "Synka produkter från Shopify".
+
+Inte visa exempelprodukter.
+
+Om inga länkar finns för en produkt ska UI säga:
+
+Inga konkurrentlänkar finns för denna produkt.
+
+Inte visa exempel-URL:er.
+
+Om en scraper saknas ska UI säga:
+
+Ingen scraper finns för denna domän.
+
+Inte gissa eller använda generic/fake-pris.
+
+Detta är ett absolut krav.
