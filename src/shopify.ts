@@ -1,7 +1,13 @@
 import { getEnvNumber, requireEnv } from "./env.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { roundMoney } from "./money.js";
-import type { ProductInput, ShopifyUpdateRequest, ShopifyUpdateResult, ShopifyVariantState } from "./types.js";
+import type {
+  ProductInput,
+  ShopifyCatalogProduct,
+  ShopifyUpdateRequest,
+  ShopifyUpdateResult,
+  ShopifyVariantState
+} from "./types.js";
 
 const SHOPIFY_API_VERSION = "2026-04";
 
@@ -45,6 +51,33 @@ type ProductVariantsBulkUpdateResponse = {
   };
 };
 
+type ProductVariantsResponse = {
+  productVariants: {
+    edges: Array<{
+      cursor: string;
+      node: {
+        id: string;
+        title: string;
+        sku: string | null;
+        price: string;
+        inventoryQuantity: number | null;
+        barcode: string | null;
+        product: {
+          id: string;
+          title: string;
+          vendor: string | null;
+          productType: string | null;
+          status: string;
+        };
+      };
+    }>;
+    pageInfo: {
+      hasNextPage: boolean;
+      endCursor: string | null;
+    };
+  };
+};
+
 let cachedAccessToken: string | null = null;
 let cachedAccessTokenExpiresAt = 0;
 
@@ -52,13 +85,90 @@ export function getShopDomain(): string {
   return requireEnv("SHOPIFY_SHOP_DOMAIN");
 }
 
+export async function fetchShopifyCatalogProducts(): Promise<ShopifyCatalogProduct[]> {
+  const shopDomain = getShopDomain();
+  const products: ShopifyCatalogProduct[] = [];
+  let cursor: string | null = null;
+
+  do {
+    const payload: ProductVariantsResponse = await shopifyGraphQl<ProductVariantsResponse>(shopDomain, {
+      query: `
+        query GetProductVariants($cursor: String) {
+          productVariants(first: 100, after: $cursor) {
+            edges {
+              cursor
+              node {
+                id
+                title
+                sku
+                price
+                inventoryQuantity
+                barcode
+                product {
+                  id
+                  title
+                  vendor
+                  productType
+                  status
+                }
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      `,
+      variables: { cursor }
+    });
+
+    for (const edge of payload.productVariants.edges) {
+      const variant = edge.node;
+      products.push({
+        shopifyProductId: variant.product.id,
+        shopifyVariantId: variant.id,
+        sku: variant.sku,
+        title: variant.title === "Default Title" ? variant.product.title : `${variant.product.title} - ${variant.title}`,
+        vendor: variant.product.vendor,
+        productType: variant.product.productType,
+        barcode: variant.barcode,
+        shopifyPrice: roundMoney(Number.parseFloat(variant.price)),
+        inventoryQuantity: variant.inventoryQuantity ?? 0,
+        active: variant.product.status === "ACTIVE"
+      });
+    }
+
+    cursor = payload.productVariants.pageInfo.hasNextPage ? payload.productVariants.pageInfo.endCursor : null;
+  } while (cursor);
+
+  return products;
+}
+
 export async function fetchShopifyVariantStates(
   products: ProductInput[]
 ): Promise<Map<string, ShopifyVariantState>> {
+  const result = new Map<string, ShopifyVariantState>();
+  const statesByVariantId = await fetchShopifyVariantStatesByVariantIds(
+    products.map((product) => product.shopifyVariantId)
+  );
+
+  for (const product of products) {
+    const state = statesByVariantId.get(product.shopifyVariantId);
+    if (state) {
+      result.set(product.sku, state);
+    }
+  }
+
+  return result;
+}
+
+export async function fetchShopifyVariantStatesByVariantIds(
+  variantIds: string[]
+): Promise<Map<string, ShopifyVariantState>> {
   const shopDomain = getShopDomain();
   const result = new Map<string, ShopifyVariantState>();
-  const productsByVariantId = new Map(products.map((product) => [product.shopifyVariantId, product]));
-  const chunks = chunkArray(products.map((product) => product.shopifyVariantId), 100);
+  const chunks = chunkArray(variantIds, 100);
 
   for (const ids of chunks) {
     const payload = await shopifyGraphQl<NodesResponse>(shopDomain, {
@@ -88,12 +198,7 @@ export async function fetchShopifyVariantStates(
         continue;
       }
 
-      const product = productsByVariantId.get(node.id);
-      if (!product) {
-        continue;
-      }
-
-      result.set(product.sku, {
+      result.set(node.id, {
         sku: node.sku,
         productId: node.product.id,
         variantId: node.id,
@@ -113,7 +218,7 @@ export async function updateShopifyPrices(
   options?: { onProgress?: (result: ShopifyUpdateResult) => void }
 ): Promise<ShopifyUpdateResult[]> {
   const shopDomain = getShopDomain();
-  const concurrency = getEnvNumber("SHOPIFY_UPDATE_CONCURRENCY", 3);
+  const concurrency = getEnvNumber("SHOPIFY_UPDATE_CONCURRENCY", 1);
 
   return mapWithConcurrency(updates, concurrency, async (update) => {
     const updatedAt = new Date().toISOString();

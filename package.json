@@ -6,7 +6,9 @@
   "scripts": {
     "check-prices": "tsx src/checkPrices.ts",
     "apply-approved": "tsx src/applyApproved.ts",
-    "build": "tsc"
+    "dev": "tsc && node dist/server.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "exceljs": "^4.4.0"

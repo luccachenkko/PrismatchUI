@@ -25,6 +25,19 @@ export type ShopifyVariantState = {
   inventoryQuantity: number;
 };
 
+export type ShopifyCatalogProduct = {
+  shopifyProductId: string;
+  shopifyVariantId: string;
+  sku: string | null;
+  title: string;
+  vendor: string | null;
+  productType: string | null;
+  barcode: string | null;
+  shopifyPrice: number;
+  inventoryQuantity: number;
+  active: boolean;
+};
+
 export type ScrapedPriceResult = {
   sku: string;
   url: string;
@@ -38,7 +51,10 @@ export type ScrapedPriceResult = {
 export type RecommendationStatus =
   | "OK"
   | "INGEN_ANDRING"
+  | "SKIPPAD_INAKTIV"
   | "SKIPPAD_EGET_LAGER_0"
+  | "SAKNAR_INKOPSPRIS"
+  | "SAKNAR_LANKAR"
   | "INGET_PRIS"
   | "BLOCKERAD_MARGINAL"
   | "SHOPIFY_FEL";

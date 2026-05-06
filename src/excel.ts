@@ -270,7 +270,6 @@ function parseProductRow(row: RawRow): ProductInput {
     inkopspris: requiredNumber(row.inkopspris, "inkopspris"),
     minMarginalProcent: requiredNumber(row.min_marginal_procent, "min_marginal_procent"),
     undercutKr: requiredNumber(row.undercut_kr, "undercut_kr"),
-    maxSankningProcent: requiredNumber(row.max_sankning_procent, "max_sankning_procent"),
     aktiv: parseBoolean(row.aktiv, true)
   };
 
