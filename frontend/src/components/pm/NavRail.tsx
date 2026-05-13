@@ -1,6 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
-  Activity,
   CalendarClock,
   FileBarChart,
   LayoutGrid,
@@ -14,7 +13,6 @@ type NavItem = { to: string; label: string; icon: typeof LayoutGrid; exact?: boo
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, exact: true },
   { to: "/products", label: "Produkter", icon: Package },
-  { to: "/runs", label: "Prismatchning", icon: Activity },
   { to: "/schedules", label: "Schemaläggning", icon: CalendarClock },
   { to: "/reports", label: "Rapporter", icon: FileBarChart },
 ];

@@ -1,4 +1,13 @@
-import type { CompetitorLink, PriceRun, ProductDetail, Recommendation, RunReport, VatMode } from "./telegramTypes.js";
+import type {
+  CompetitorLink,
+  PriceRun,
+  ProductDetail,
+  Recommendation,
+  RunReport,
+  Schedule,
+  SchedulePayload,
+  VatMode
+} from "./telegramTypes.js";
 
 export function formatMoney(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -126,6 +135,116 @@ export function formatReport(report: RunReport): string {
   ].join("\n");
 }
 
+
+export function formatScheduleList(schedules: Schedule[]): string {
+  if (schedules.length === 0) {
+    return "Inga scheman finns sparade.";
+  }
+
+  const visible = schedules.slice(0, 12);
+  const extraCount = schedules.length - visible.length;
+
+  return [
+    `Scheman: ${schedules.length}`,
+    ...visible.map((schedule) =>
+      [
+        `#${schedule.id} ${schedule.name}`,
+        `Status: ${schedule.enabled === 1 ? "aktiv" : "inaktiv"}`,
+        `Gör: ${formatScheduleTask(schedule.task_type)}`,
+        `Frekvens: ${formatScheduleFrequency(schedule)}`,
+        `Nästa körning: ${formatDate(schedule.next_run_at)}`,
+        schedule.last_error ? `Senaste fel: ${schedule.last_error}` : null
+      ]
+        .filter(Boolean)
+        .join("\n")
+    ),
+    extraCount > 0 ? `Visar 12 av ${schedules.length}.` : null
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function formatScheduleDetail(schedule: Schedule): string {
+  return [
+    `Schema #${schedule.id}`,
+    `Namn: ${schedule.name}`,
+    `Status: ${schedule.enabled === 1 ? "aktiv" : "inaktiv"}`,
+    `Gör: ${formatScheduleTask(schedule.task_type)}`,
+    `Produkter: ${formatScheduleScope(schedule.scope_type)}`,
+    `Frekvens: ${formatScheduleFrequency(schedule)}`,
+    `Timezone: ${schedule.timezone}`,
+    `Senast körd: ${formatDate(schedule.last_run_at)}`,
+    `Nästa körning: ${formatDate(schedule.next_run_at)}`,
+    `Senaste rapport: ${schedule.last_run_id ? `#${schedule.last_run_id}` : "-"}`,
+    schedule.last_error ? `Senaste fel: ${schedule.last_error}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function formatScheduleCreated(schedule: Schedule): string {
+  return [
+    `Schema skapat: #${schedule.id}`,
+    `Namn: ${schedule.name}`,
+    `Gör: ${formatScheduleTask(schedule.task_type)}`,
+    `Produkter: ${formatScheduleScope(schedule.scope_type)}`,
+    `Frekvens: ${formatScheduleFrequency(schedule)}`,
+    `Nästa körning: ${formatDate(schedule.next_run_at)}`,
+    "Telegram-agenten skapar bara schema/rapporter. Den godkänner inte prisändringar och uppdaterar inte Shopify."
+  ].join("\n");
+}
+
+export function formatScheduleUpdated(schedule: Schedule, action: string): string {
+  return [
+    `${action}: schema #${schedule.id}`,
+    `Status: ${schedule.enabled === 1 ? "aktiv" : "inaktiv"}`,
+    `Nästa körning: ${formatDate(schedule.next_run_at)}`
+  ].join("\n");
+}
+
+export function formatScheduleDeleted(scheduleId: number): string {
+  return `Schema #${scheduleId} togs bort.`;
+}
+
+export function formatScheduleRunResult(result: { schedule: Schedule; run: PriceRun | null }): string {
+  return [
+    `Schema #${result.schedule.id} kördes.`,
+    result.run ? `Rapport skapad: run ${result.run.id}` : "Ingen prismatchningsrapport skapades för denna schematyp.",
+    `Nästa körning: ${formatDate(result.schedule.next_run_at)}`,
+    result.schedule.last_error ? `Fel: ${result.schedule.last_error}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function describeSchedulePayload(payload: SchedulePayload): string {
+  const scheduleLike: Schedule = {
+    id: 0,
+    name: payload.name,
+    task_type: payload.task_type,
+    scope_type: payload.scope_type,
+    frequency_type: payload.frequency_type,
+    time_of_day: payload.time_of_day,
+    interval_hours: payload.interval_hours,
+    weekday: payload.weekday,
+    timezone: payload.timezone,
+    enabled: payload.enabled ? 1 : 0,
+    last_run_at: null,
+    last_run_id: null,
+    last_error: null,
+    next_run_at: null,
+    created_at: "",
+    updated_at: ""
+  };
+
+  return [
+    payload.name,
+    formatScheduleTask(payload.task_type),
+    formatScheduleScope(payload.scope_type),
+    formatScheduleFrequency(scheduleLike)
+  ].join(" · ");
+}
+
 export function formatStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     OK: "OK",
@@ -205,4 +324,45 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("sv-SE", {
     maximumFractionDigits: 2
   }).format(value);
+}
+
+function formatScheduleTask(taskType: string): string {
+  if (taskType === "sync_and_price_match") return "Shopify-synk + prismatchning";
+  if (taskType === "price_match_only") return "Prismatchning";
+  if (taskType === "shopify_sync_only") return "Shopify-synk";
+  if (taskType === "top_products_price_match") return "Bästsäljare";
+  return taskType;
+}
+
+function formatScheduleScope(scopeType: string): string {
+  if (scopeType === "ready") return "Redo för prismatchning";
+  if (scopeType === "in_stock") return "Bara produkter med eget lager";
+  if (scopeType === "all_active") return "Alla aktiva produkter";
+  return scopeType;
+}
+
+function formatScheduleFrequency(schedule: Pick<Schedule, "frequency_type" | "time_of_day" | "interval_hours" | "weekday">): string {
+  if (schedule.frequency_type === "hourly") {
+    return `Var ${schedule.interval_hours ?? 6}:e timme`;
+  }
+
+  if (schedule.frequency_type === "weekly") {
+    return `${weekdayLabel(schedule.weekday ?? 1)} ${schedule.time_of_day ?? "06:00"}`;
+  }
+
+  return `Dagligen ${schedule.time_of_day ?? "06:00"}`;
+}
+
+function weekdayLabel(value: number): string {
+  const labels: Record<number, string> = {
+    1: "måndag",
+    2: "tisdag",
+    3: "onsdag",
+    4: "torsdag",
+    5: "fredag",
+    6: "lördag",
+    7: "söndag"
+  };
+
+  return labels[value] ?? String(value);
 }

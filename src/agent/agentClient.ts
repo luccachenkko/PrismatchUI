@@ -4,7 +4,9 @@ import type {
   PriceRun,
   Product,
   ProductDetail,
-  RunReport
+  RunReport,
+  Schedule,
+  SchedulePayload
 } from "./telegramTypes.js";
 
 type RequestOptions = RequestInit & {
@@ -83,6 +85,45 @@ export class AgentClient {
 
   async priceRunReport(runId: number): Promise<RunReport> {
     return this.request<RunReport>(`/api/price-runs/${runId}`);
+  }
+
+  async schedules(): Promise<Schedule[]> {
+    const response = await this.request<{ schedules: Schedule[] }>("/api/schedules");
+    return response.schedules;
+  }
+
+  async schedule(scheduleId: number): Promise<Schedule | null> {
+    const schedules = await this.schedules();
+    return schedules.find((schedule) => schedule.id === scheduleId) ?? null;
+  }
+
+  async createSchedule(payload: SchedulePayload): Promise<Schedule> {
+    const response = await this.request<{ schedule: Schedule }>("/api/schedules", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+
+    return response.schedule;
+  }
+
+  async updateSchedule(scheduleId: number, payload: Partial<SchedulePayload>): Promise<Schedule> {
+    const response = await this.request<{ schedule: Schedule }>(`/api/schedules/${scheduleId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+
+    return response.schedule;
+  }
+
+  async deleteSchedule(scheduleId: number): Promise<void> {
+    await this.request<{ ok: true }>(`/api/schedules/${scheduleId}`, { method: "DELETE" });
+  }
+
+  async runScheduleNow(scheduleId: number): Promise<{ schedule: Schedule; run: PriceRun | null }> {
+    return this.request<{ schedule: Schedule; run: PriceRun | null }>(`/api/schedules/${scheduleId}/run-now`, {
+      method: "POST",
+      timeoutMs: 15 * 60 * 1000
+    });
   }
 
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {

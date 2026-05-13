@@ -9,7 +9,7 @@ import { Toaster } from "sonner";
 import { NavRail } from "@/components/pm/NavRail";
 import { DashboardRoute } from "@/routes/Dashboard";
 import { ProductsRoute } from "@/routes/Products";
-import { RunsRoute } from "@/routes/Runs";
+import { ReportsRoute } from "@/routes/Reports";
 import { ReportRoute } from "@/routes/Report";
 import { SchedulesRoute } from "@/routes/Schedules";
 
@@ -45,16 +45,10 @@ const productsRoute = createRoute({
   component: ProductsRoute,
 });
 
-const runsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/runs",
-  component: RunsRoute,
-});
-
 const reportsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/reports",
-  component: RunsRoute,
+  component: ReportsRoute,
 });
 
 const schedulesRoute = createRoute({
@@ -72,7 +66,6 @@ const reportRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   productsRoute,
-  runsRoute,
   reportsRoute,
   schedulesRoute,
   reportRoute,

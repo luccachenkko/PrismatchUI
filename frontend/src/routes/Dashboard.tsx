@@ -192,7 +192,7 @@ export function DashboardRoute() {
                 <div className="panel-title">
                   Senaste körningar
                 </div>
-                <Link to="/runs" className="text-[11px] text-muted-foreground hover:text-foreground">
+                <Link to="/reports" className="text-[11px] text-muted-foreground hover:text-foreground">
                   Alla →
                 </Link>
               </div>

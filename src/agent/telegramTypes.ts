@@ -176,3 +176,46 @@ export type RunReport = {
   errors?: PriceSnapshot[];
   shopifyUpdates: ShopifyUpdate[];
 };
+
+
+export type ScheduleTaskType =
+  | "shopify_sync_only"
+  | "price_match_only"
+  | "sync_and_price_match"
+  | "top_products_price_match";
+
+export type ScheduleScopeType = "all_active" | "in_stock" | "ready";
+
+export type ScheduleFrequencyType = "daily" | "hourly" | "weekly";
+
+export type Schedule = {
+  id: number;
+  name: string;
+  task_type: ScheduleTaskType;
+  scope_type: ScheduleScopeType;
+  frequency_type: ScheduleFrequencyType;
+  time_of_day: string | null;
+  interval_hours: number | null;
+  weekday: number | null;
+  timezone: string;
+  enabled: number;
+  last_run_at: string | null;
+  last_run_id: number | null;
+  last_error: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_report_status?: string | null;
+};
+
+export type SchedulePayload = {
+  name: string;
+  task_type: ScheduleTaskType;
+  scope_type: ScheduleScopeType;
+  frequency_type: ScheduleFrequencyType;
+  time_of_day: string | null;
+  interval_hours: number | null;
+  weekday: number | null;
+  timezone: string;
+  enabled: boolean;
+};
