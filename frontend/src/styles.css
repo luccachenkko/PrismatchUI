@@ -1,0 +1,194 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+/*
+ * Pricematch Control — operational React UI.
+ * Frontend-only visual layer. Backend/API logic stays untouched.
+ */
+
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-err: var(--err);
+  --color-err-bg: var(--err-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+  --color-ring: var(--ring);
+
+  --color-card: var(--surface);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--foreground);
+  --color-secondary: var(--surface-2);
+  --color-secondary-foreground: var(--foreground);
+  --color-destructive: var(--err);
+  --color-input: var(--border);
+}
+
+:root {
+  --background: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #eef2f6;
+  --foreground: #172033;
+  --muted: #eef2f6;
+  --muted-foreground: #5c6678;
+  --subtle: #7c8797;
+  --border: #dde3ea;
+  --border-strong: #c7d0db;
+  --primary: #1f3a5f;
+  --primary-foreground: #ffffff;
+  --accent: #2563eb;
+  --accent-foreground: #ffffff;
+  --ok: #14734a;
+  --ok-bg: #e7f6ef;
+  --warn: #936300;
+  --warn-bg: #fff4d7;
+  --err: #b42318;
+  --err-bg: #ffebe8;
+  --info: #225b9f;
+  --info-bg: #e8f1ff;
+  --ring: #2563eb;
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html, body, #root { height: 100%; min-height: 100%; }
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button, input, select, textarea { font: inherit; }
+  .num, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  .nav-rail {
+    background: linear-gradient(180deg, #101827 0%, #172033 100%);
+    color: #e8edf5;
+    border-color: rgba(255,255,255,.10);
+  }
+  .nav-rail .nav-muted { color: rgba(232,237,245,.58); }
+  .nav-rail .nav-brand-dot { background: #7dd3fc; box-shadow: 0 0 0 4px rgba(125,211,252,.12); }
+  .nav-item { color: rgba(232,237,245,.72); }
+  .nav-item:hover { background: rgba(255,255,255,.07); color: #fff; }
+  .nav-item-active { background: rgba(255,255,255,.12); color: #fff; box-shadow: inset 3px 0 0 #7dd3fc; }
+
+  .workspace-shell { background: var(--background); }
+  .workspace-header {
+    background: rgba(255,255,255,.92);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 1px 0 var(--border);
+  }
+  .workspace-toolbar {
+    background: rgba(248,250,252,.92);
+    box-shadow: 0 1px 0 var(--border);
+  }
+  .workspace-context {
+    background: #fbfcfe;
+    box-shadow: -1px 0 0 var(--border), -18px 0 30px -28px rgba(16,24,39,.35);
+  }
+  .workspace-context-title {
+    background: #fff;
+    box-shadow: 0 1px 0 var(--border);
+  }
+
+  .metric-tile {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(16,24,39,.04);
+  }
+  .panel {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(16,24,39,.04);
+  }
+  .panel-header {
+    display: flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding: 0 14px;
+  }
+  .panel-title {
+    color: var(--subtle);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .work-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    border-bottom: 1px solid var(--border);
+    padding: 12px 14px;
+    transition: background-color .12s ease, transform .12s ease;
+  }
+  .work-row:last-child { border-bottom: 0; }
+  .work-row:hover { background: var(--surface-2); }
+  .data-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 12px;
+  }
+  .data-table thead {
+    background: #f1f5f9;
+    color: var(--subtle);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .data-table th,
+  .data-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 9px 10px;
+    vertical-align: middle;
+  }
+  .data-table tbody tr { background: #fff; }
+  .data-table tbody tr:hover { background: #f7fafe; }
+  .data-table .is-selected { background: var(--info-bg); }
+  .context-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(16,24,39,.04);
+  }
+}
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-track { background: transparent; }

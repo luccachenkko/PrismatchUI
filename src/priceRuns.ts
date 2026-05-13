@@ -4,6 +4,13 @@ import { getDatabase, type CompetitorLinkRow, type PricingRuleRow } from "./db.j
 import { roundMoney } from "./money.js";
 import { scrapePriceForLink } from "./scrapers/index.js";
 import { fetchShopifyVariantStatesByVariantIds, updateShopifyPrices } from "./shopify.js";
+import {
+  calculateMinAllowedPrice,
+  calculateTb1,
+  toExVat,
+  toIncVat,
+  type VatMode
+} from "./vat.js";
 import type {
   LinkInput,
   RecommendationStatus,
@@ -18,6 +25,10 @@ type RunProductRow = {
   shopify_variant_id: string;
   sku: string | null;
   title: string;
+  vendor: string | null;
+  product_type: string | null;
+  barcode: string | null;
+  inventory_quantity: number;
   active: number;
 };
 
@@ -63,14 +74,31 @@ type RecommendationRow = {
   sku: string | null;
   title: string;
   inventory_quantity: number;
+  last_synced_at: string;
   shopify_price_before: number | null;
+  shopify_price_inc_vat: number | null;
+  shopify_price_ex_vat: number | null;
+  shopify_price_vat_mode: VatMode;
   cheapest_competitor_domain: string | null;
   cheapest_competitor_url: string | null;
   cheapest_competitor_price: number | null;
+  cheapest_competitor_price_inc_vat: number | null;
+  cheapest_competitor_price_ex_vat: number | null;
   suggested_price: number | null;
+  suggested_price_inc_vat: number | null;
+  suggested_price_ex_vat: number | null;
   cost_price: number | null;
+  cost_price_inc_vat: number | null;
+  cost_price_ex_vat: number | null;
+  cost_price_vat_mode: VatMode;
+  sales_price_vat_mode: VatMode;
+  vat_percent: number;
   min_margin_percent: number | null;
   min_allowed_price: number | null;
+  min_allowed_price_inc_vat: number | null;
+  min_allowed_price_ex_vat: number | null;
+  tb1_amount: number | null;
+  tb1_percent: number | null;
   margin_after_percent: number | null;
   status: RecommendationStatus;
   reason: string;
@@ -125,9 +153,11 @@ type ApplyApprovedResult = {
   error: string | null;
 };
 
+export type PriceRunScopeType = "all_active" | "in_stock" | "ready";
+
 let runningInProcess = false;
 
-export async function startPriceRun(): Promise<PriceRunRow> {
+export async function startPriceRun(options: { scopeType?: PriceRunScopeType } = {}): Promise<PriceRunRow> {
   if (runningInProcess || hasRunningPriceRun()) {
     throw new Error("En prismatchningskörning pågår redan.");
   }
@@ -137,17 +167,36 @@ export async function startPriceRun(): Promise<PriceRunRow> {
   const runId = createRun(startedAt);
 
   try {
-    const runProducts = loadRunProducts();
+    const runProducts = loadRunProducts(options.scopeType ?? "all");
     updateRunTotals(runId, { total_products: runProducts.length });
 
+    console.log("Refreshing Shopify price and inventory before price run...");
     const variantStates = await fetchShopifyVariantStatesByVariantIds(
       runProducts.map((item) => item.product.shopify_variant_id)
     );
-    updateProductsFromShopifyStates(runProducts, variantStates);
+    const refreshStats = updateProductsFromShopifyStates(runProducts, variantStates);
 
     const eligibleProducts: RunProduct[] = [];
+    let shopifyErrorCount = 0;
+    let skippedNoStockCount = 0;
     for (const item of runProducts) {
       const state = variantStates.get(item.product.shopify_variant_id) ?? null;
+      if (!state) {
+        shopifyErrorCount += 1;
+        insertRecommendation(
+          buildRecommendation({
+            runId,
+            product: item.product,
+            pricingRule: item.pricingRule,
+            shopifyState: null,
+            shopifyError: "Shopify returnerade ingen variant fÃ¶r sparat shopify_variant_id.",
+            snapshots: [],
+            createdAt: new Date().toISOString()
+          })
+        );
+        continue;
+      }
+
       if (item.product.active !== 1 || (item.pricingRule && item.pricingRule.enabled !== 1)) {
         insertRecommendation(
           buildRecommendation({
@@ -163,6 +212,7 @@ export async function startPriceRun(): Promise<PriceRunRow> {
       }
 
       if (!state) {
+        shopifyErrorCount += 1;
         insertRecommendation(
           buildRecommendation({
             runId,
@@ -178,6 +228,7 @@ export async function startPriceRun(): Promise<PriceRunRow> {
       }
 
       if (state.inventoryQuantity <= 0) {
+        skippedNoStockCount += 1;
         insertRecommendation(
           buildRecommendation({
             runId,
@@ -221,6 +272,10 @@ export async function startPriceRun(): Promise<PriceRunRow> {
 
       eligibleProducts.push(item);
     }
+
+    console.log(`Shopify refresh updated ${refreshStats.updatedCount} products.`);
+    console.log(`Shopify refresh product errors: ${shopifyErrorCount}.`);
+    console.log(`Products skipped because own Shopify inventory is 0: ${skippedNoStockCount}.`);
 
     const priceJobs = eligibleProducts.flatMap((item) =>
       item.competitorLinks.map((link) => ({
@@ -266,6 +321,10 @@ export async function startPriceRun(): Promise<PriceRunRow> {
   return getPriceRunRow(runId);
 }
 
+export function isPriceRunRunning(): boolean {
+  return runningInProcess || hasRunningPriceRun();
+}
+
 export function listPriceRuns(): PriceRunRow[] {
   return getDatabase()
     .prepare(
@@ -290,7 +349,7 @@ export function getPriceRunReport(runId: number): {
     return null;
   }
 
-  const recommendations = (getDatabase()
+  const recommendations = ((getDatabase()
     .prepare(
       `
       SELECT
@@ -298,6 +357,7 @@ export function getPriceRunReport(runId: number): {
         p.sku,
         p.title,
         p.inventory_quantity,
+        p.last_synced_at,
         COALESCE(latest_update.status, 'not_updated') AS shopify_update_status,
         latest_update.error AS shopify_update_error,
         latest_update.updated_at AS shopify_update_at
@@ -316,7 +376,7 @@ export function getPriceRunReport(runId: number): {
       ORDER BY p.title ASC, p.id ASC
       `
     )
-    .all(runId) as unknown) as RecommendationRow[];
+    .all(runId) as unknown) as RecommendationRow[]).map(hydrateRecommendationVatFields);
 
   const snapshots = getDatabase()
     .prepare(
@@ -475,6 +535,81 @@ export function getShopifyUpdatesForRun(runId: number): ShopifyUpdateLogRow[] {
     .all(runId) as unknown) as ShopifyUpdateLogRow[];
 }
 
+function hydrateRecommendationVatFields(row: RecommendationRow): RecommendationRow {
+  const vatPercent = row.vat_percent ?? 25;
+  const costPriceVatMode = normalizeRuleVatMode(row.cost_price_vat_mode, "ex_vat");
+  const salesPriceVatMode = normalizeRuleVatMode(row.sales_price_vat_mode, "inc_vat");
+  const shopifyPriceVatMode = normalizeRuleVatMode(row.shopify_price_vat_mode, salesPriceVatMode);
+  const costPriceIncVat =
+    row.cost_price_inc_vat ?? (row.cost_price === null ? null : toIncVat(row.cost_price, vatPercent, costPriceVatMode));
+  const costPriceExVat =
+    row.cost_price_ex_vat ?? (row.cost_price === null ? null : toExVat(row.cost_price, vatPercent, costPriceVatMode));
+  const shopifyPriceIncVat =
+    row.shopify_price_inc_vat ??
+    (row.shopify_price_before === null ? null : toIncVat(row.shopify_price_before, vatPercent, shopifyPriceVatMode));
+  const shopifyPriceExVat =
+    row.shopify_price_ex_vat ??
+    (row.shopify_price_before === null ? null : toExVat(row.shopify_price_before, vatPercent, shopifyPriceVatMode));
+  const competitorPriceIncVat =
+    row.cheapest_competitor_price_inc_vat ??
+    (row.cheapest_competitor_price === null
+      ? null
+      : toIncVat(row.cheapest_competitor_price, vatPercent, salesPriceVatMode));
+  const competitorPriceExVat =
+    row.cheapest_competitor_price_ex_vat ??
+    (row.cheapest_competitor_price === null
+      ? null
+      : toExVat(row.cheapest_competitor_price, vatPercent, salesPriceVatMode));
+  const suggestedPriceIncVat =
+    row.suggested_price_inc_vat ??
+    (row.suggested_price === null ? null : toIncVat(row.suggested_price, vatPercent, salesPriceVatMode));
+  const suggestedPriceExVat =
+    row.suggested_price_ex_vat ??
+    (row.suggested_price === null ? null : toExVat(row.suggested_price, vatPercent, salesPriceVatMode));
+  const minAllowed =
+    row.cost_price !== null && row.min_margin_percent !== null
+      ? calculateMinAllowedPrice({
+          costPrice: row.cost_price,
+          costPriceVatMode,
+          salesPriceVatMode,
+          vatPercent,
+          minMarginPercent: row.min_margin_percent
+        })
+      : null;
+  const tb1 =
+    row.suggested_price !== null && row.cost_price !== null
+      ? calculateTb1({
+          sellingPrice: row.suggested_price,
+          salesPriceVatMode,
+          costPrice: row.cost_price,
+          costPriceVatMode,
+          vatPercent
+        })
+      : null;
+
+  return {
+    ...row,
+    cost_price_vat_mode: costPriceVatMode,
+    sales_price_vat_mode: salesPriceVatMode,
+    shopify_price_vat_mode: shopifyPriceVatMode,
+    vat_percent: vatPercent,
+    cost_price_inc_vat: costPriceIncVat,
+    cost_price_ex_vat: costPriceExVat,
+    shopify_price_inc_vat: shopifyPriceIncVat,
+    shopify_price_ex_vat: shopifyPriceExVat,
+    cheapest_competitor_price_inc_vat: competitorPriceIncVat,
+    cheapest_competitor_price_ex_vat: competitorPriceExVat,
+    suggested_price_inc_vat: suggestedPriceIncVat,
+    suggested_price_ex_vat: suggestedPriceExVat,
+    min_allowed_price: row.min_allowed_price ?? minAllowed?.minAllowedPrice ?? null,
+    min_allowed_price_inc_vat: row.min_allowed_price_inc_vat ?? minAllowed?.minAllowedPriceIncVat ?? null,
+    min_allowed_price_ex_vat: row.min_allowed_price_ex_vat ?? minAllowed?.minAllowedPriceExVat ?? null,
+    tb1_amount: row.tb1_amount ?? tb1?.tb1Amount ?? null,
+    tb1_percent: row.tb1_percent ?? tb1?.tb1Percent ?? null,
+    margin_after_percent: row.margin_after_percent ?? tb1?.tb1Percent ?? null
+  };
+}
+
 function createRun(startedAt: string): number {
   const result = getDatabase()
     .prepare(
@@ -495,7 +630,8 @@ function getRecommendation(recommendationId: number): RecommendationRow | null {
         r.*,
         p.sku,
         p.title,
-        p.inventory_quantity
+        p.inventory_quantity,
+        p.last_synced_at
       FROM price_recommendations r
       JOIN products p ON p.id = r.product_id
       WHERE r.id = ?
@@ -522,6 +658,7 @@ function loadApprovedUpdateCandidates(runId: number): RecommendationForUpdate[] 
         p.sku,
         p.title,
         p.inventory_quantity,
+        p.last_synced_at,
         p.shopify_product_id,
         p.shopify_variant_id
       FROM price_recommendations r
@@ -574,38 +711,126 @@ function hasRunningPriceRun(): boolean {
   return Boolean(row);
 }
 
-function loadRunProducts(): RunProduct[] {
+function loadRunProducts(scopeType: PriceRunScopeType | "all"): RunProduct[] {
   const products = getDatabase()
-    .prepare("SELECT id, shopify_product_id, shopify_variant_id, sku, title, active FROM products ORDER BY id ASC")
+    .prepare(
+      `
+      SELECT
+        id,
+        shopify_product_id,
+        shopify_variant_id,
+        sku,
+        title,
+        vendor,
+        product_type,
+        barcode,
+        inventory_quantity,
+        active
+      FROM products
+      ORDER BY id ASC
+      `
+    )
     .all() as RunProductRow[];
 
   const ruleStatement = getDatabase().prepare("SELECT * FROM pricing_rules WHERE product_id = ?");
   const linksStatement = getDatabase().prepare("SELECT * FROM competitor_links WHERE product_id = ? AND enabled = 1");
 
-  return products.map((product) => ({
-    product,
-    pricingRule: (ruleStatement.get(product.id) as PricingRuleRow | undefined) ?? null,
-    competitorLinks: linksStatement.all(product.id) as unknown as CompetitorLinkRow[]
-  }));
+  return products
+    .map((product) => ({
+      product,
+      pricingRule: (ruleStatement.get(product.id) as PricingRuleRow | undefined) ?? null,
+      competitorLinks: linksStatement.all(product.id) as unknown as CompetitorLinkRow[]
+    }))
+    .filter((item) => productMatchesScope(item, scopeType));
 }
 
-function updateProductsFromShopifyStates(products: RunProduct[], states: Map<string, ShopifyVariantState>): void {
+function productMatchesScope(item: RunProduct, scopeType: PriceRunScopeType | "all"): boolean {
+  if (scopeType === "all") {
+    return true;
+  }
+
+  if (item.product.active !== 1) {
+    return false;
+  }
+
+  if (scopeType === "all_active") {
+    return true;
+  }
+
+  if (item.product.inventory_quantity <= 0) {
+    return false;
+  }
+
+  if (scopeType === "in_stock") {
+    return true;
+  }
+
+  return Boolean(
+    item.pricingRule &&
+      item.pricingRule.enabled === 1 &&
+      item.pricingRule.cost_price !== null &&
+      item.pricingRule.min_margin_percent !== null &&
+      item.competitorLinks.length > 0
+  );
+}
+
+function updateProductsFromShopifyStates(
+  products: RunProduct[],
+  states: Map<string, ShopifyVariantState>
+): { updatedCount: number } {
   const statement = getDatabase().prepare(
     `
     UPDATE products
-    SET shopify_price = ?, inventory_quantity = ?, updated_at = ?
+    SET
+      shopify_product_id = ?,
+      sku = ?,
+      title = ?,
+      vendor = ?,
+      product_type = ?,
+      barcode = ?,
+      shopify_price = ?,
+      inventory_quantity = ?,
+      active = ?,
+      last_synced_at = ?,
+      updated_at = ?
     WHERE id = ?
     `
   );
   const now = new Date().toISOString();
+  let updatedCount = 0;
 
   for (const item of products) {
     const state = states.get(item.product.shopify_variant_id);
     if (!state) {
       continue;
     }
-    statement.run(state.price, state.inventoryQuantity, now, item.product.id);
+    const active = state.active ? 1 : 0;
+    statement.run(
+      state.productId,
+      state.sku,
+      state.title,
+      state.vendor,
+      state.productType,
+      state.barcode,
+      state.price,
+      state.inventoryQuantity,
+      active,
+      now,
+      now,
+      item.product.id
+    );
+    item.product.shopify_product_id = state.productId;
+    item.product.sku = state.sku;
+    item.product.title = state.title;
+    item.product.vendor = state.vendor;
+    item.product.product_type = state.productType;
+    item.product.barcode = state.barcode;
+    item.product.inventory_quantity = state.inventoryQuantity;
+    item.product.active = active;
+    updatedCount += 1;
   }
+
+  return { updatedCount };
 }
 
 function insertSnapshot(runId: number, job: PriceJob, scraped: ScrapedPriceResult): StoredSnapshot {
@@ -664,25 +889,61 @@ function updateCompetitorLinkAfterScrape(linkId: number, snapshot: StoredSnapsho
     .run(snapshot.fetched_at, snapshot.price, snapshot.status, snapshot.error, snapshot.fetched_at, linkId);
 }
 
-function buildRecommendation(input: RecommendationInput): Omit<RecommendationRow, "id" | "sku" | "title" | "inventory_quantity"> {
+function buildRecommendation(
+  input: RecommendationInput
+): Omit<RecommendationRow, "id" | "sku" | "title" | "inventory_quantity" | "last_synced_at"> {
   const { runId, product, pricingRule, shopifyState, shopifyError, snapshots, createdAt } = input;
   const costPrice = pricingRule?.cost_price ?? null;
+  const costPriceVatMode = normalizeRuleVatMode(pricingRule?.cost_price_vat_mode, "ex_vat");
+  const salesPriceVatMode = normalizeRuleVatMode(pricingRule?.sales_price_vat_mode, "inc_vat");
+  const vatPercent = pricingRule?.vat_percent ?? 25;
   const minMarginPercent = pricingRule?.min_margin_percent ?? null;
   const undercutAmount = pricingRule?.undercut_amount ?? 0;
-  const minAllowedPrice =
-    costPrice !== null ? roundMoney(costPrice / (1 - (minMarginPercent ?? 0) / 100)) : null;
+  const shopifyPrice = shopifyState?.price ?? null;
+  const shopifyPriceIncVat =
+    shopifyPrice === null ? null : toIncVat(shopifyPrice, vatPercent, salesPriceVatMode);
+  const shopifyPriceExVat =
+    shopifyPrice === null ? null : toExVat(shopifyPrice, vatPercent, salesPriceVatMode);
+  const costPriceIncVat = costPrice === null ? null : toIncVat(costPrice, vatPercent, costPriceVatMode);
+  const costPriceExVat = costPrice === null ? null : toExVat(costPrice, vatPercent, costPriceVatMode);
+  const minAllowed =
+    costPrice !== null && minMarginPercent !== null
+      ? calculateMinAllowedPrice({
+          costPrice,
+          costPriceVatMode,
+          salesPriceVatMode,
+          vatPercent,
+          minMarginPercent
+        })
+      : null;
 
   const base = {
     run_id: runId,
     product_id: product.id,
-    shopify_price_before: shopifyState?.price ?? null,
+    shopify_price_before: shopifyPrice,
+    shopify_price_inc_vat: shopifyPriceIncVat,
+    shopify_price_ex_vat: shopifyPriceExVat,
+    shopify_price_vat_mode: salesPriceVatMode,
     cheapest_competitor_domain: null,
     cheapest_competitor_url: null,
     cheapest_competitor_price: null,
+    cheapest_competitor_price_inc_vat: null,
+    cheapest_competitor_price_ex_vat: null,
     suggested_price: null,
+    suggested_price_inc_vat: null,
+    suggested_price_ex_vat: null,
     cost_price: costPrice,
+    cost_price_inc_vat: costPriceIncVat,
+    cost_price_ex_vat: costPriceExVat,
+    cost_price_vat_mode: costPriceVatMode,
+    sales_price_vat_mode: salesPriceVatMode,
+    vat_percent: vatPercent,
     min_margin_percent: minMarginPercent,
-    min_allowed_price: minAllowedPrice,
+    min_allowed_price: minAllowed?.minAllowedPrice ?? null,
+    min_allowed_price_inc_vat: minAllowed?.minAllowedPriceIncVat ?? null,
+    min_allowed_price_ex_vat: minAllowed?.minAllowedPriceExVat ?? null,
+    tb1_amount: null,
+    tb1_percent: null,
     margin_after_percent: null,
     approved: 0,
     created_at: createdAt
@@ -716,7 +977,15 @@ function buildRecommendation(input: RecommendationInput): Omit<RecommendationRow
     return {
       ...base,
       status: "SAKNAR_INKOPSPRIS",
-      reason: pricingRule ? "Inköpspris saknas. Kan inte räkna marginal." : "Prismatchningsregel saknas."
+      reason: pricingRule ? "Inköpspris saknas. Kan inte räkna TB1." : "Prismatchningsregel saknas."
+    };
+  }
+
+  if (minMarginPercent === null) {
+    return {
+      ...base,
+      status: "SAKNAR_MIN_MARGINAL",
+      reason: "Min TB1 % saknas. Kan inte räkna lägsta tillåtna pris."
     };
   }
 
@@ -740,31 +1009,63 @@ function buildRecommendation(input: RecommendationInput): Omit<RecommendationRow
     };
   }
 
-  const cheapest = validSnapshots.reduce((lowest, current) =>
-    current.price !== null && lowest.price !== null && current.price < lowest.price ? current : lowest
+  const candidates = validSnapshots.map((snapshot) => {
+    const competitorPrice = snapshot.price as number;
+    const suggestedPrice = roundMoney(competitorPrice - undercutAmount);
+    return {
+      snapshot,
+      competitorPrice,
+      suggestedPrice,
+      sellingPriceExVat: toExVat(suggestedPrice, vatPercent, salesPriceVatMode)
+    };
+  });
+
+  const cheapestOverall = candidates.reduce((lowest, current) =>
+    current.competitorPrice < lowest.competitorPrice ? current : lowest
   );
-  const cheapestPrice = cheapest.price as number;
-  const suggestedPrice = roundMoney(cheapestPrice - undercutAmount);
-  const marginAfter = roundMoney(((suggestedPrice - costPrice) / suggestedPrice) * 100);
 
-  const priced = {
-    ...base,
-    cheapest_competitor_domain: cheapest.domain,
-    cheapest_competitor_url: cheapest.url,
-    cheapest_competitor_price: cheapestPrice,
-    suggested_price: suggestedPrice,
-    margin_after_percent: marginAfter
-  };
+  const eligibleCandidates = candidates.filter(
+    (candidate) => minAllowed !== null && candidate.sellingPriceExVat >= minAllowed.minAllowedPriceExVat
+  );
 
-  if (minAllowedPrice !== null && suggestedPrice < minAllowedPrice) {
+  const lowestBlockedCount = candidates.length - eligibleCandidates.length;
+
+  if (eligibleCandidates.length === 0 || minAllowed === null) {
+    const priced = buildPricedRecommendationValues({
+      base,
+      snapshot: cheapestOverall.snapshot,
+      competitorPrice: cheapestOverall.competitorPrice,
+      suggestedPrice: cheapestOverall.suggestedPrice,
+      costPrice,
+      costPriceVatMode,
+      salesPriceVatMode,
+      vatPercent,
+      minAllowed
+    });
+
     return {
       ...priced,
       status: "BLOCKERAD_MARGINAL",
-      reason: "Föreslaget pris går under minsta tillåtna marginal."
+      reason: "Alla giltiga konkurrentpriser skulle ge ett föreslaget pris under minsta tillåtna TB1."
     };
   }
 
-  if (roundMoney(shopifyState.price) === suggestedPrice) {
+  const cheapest = eligibleCandidates.reduce((lowest, current) =>
+    current.suggestedPrice < lowest.suggestedPrice ? current : lowest
+  );
+  const priced = buildPricedRecommendationValues({
+    base,
+    snapshot: cheapest.snapshot,
+    competitorPrice: cheapest.competitorPrice,
+    suggestedPrice: cheapest.suggestedPrice,
+    costPrice,
+    costPriceVatMode,
+    salesPriceVatMode,
+    vatPercent,
+    minAllowed
+  });
+
+  if (roundMoney(shopifyState.price) === cheapest.suggestedPrice) {
     return {
       ...priced,
       status: "INGEN_ANDRING",
@@ -772,14 +1073,82 @@ function buildRecommendation(input: RecommendationInput): Omit<RecommendationRow
     };
   }
 
+  const ignoredPriceNote =
+    lowestBlockedCount > 0
+      ? ` ${lowestBlockedCount} lägre konkurrentpris ignorerades eftersom de skulle gå under minsta TB1.`
+      : "";
+
   return {
     ...priced,
     status: "OK",
-    reason: `Billigaste konkurrent är ${cheapest.domain} med ${cheapestPrice} kr. Föreslaget pris är ${suggestedPrice} kr.`
+    reason: `Billigaste konkurrent som klarar TB1-regeln är ${cheapest.snapshot.domain} med ${cheapest.competitorPrice} kr. Föreslaget pris är ${cheapest.suggestedPrice} kr.${ignoredPriceNote}`
   };
 }
 
-function insertRecommendation(recommendation: Omit<RecommendationRow, "id" | "sku" | "title" | "inventory_quantity">): void {
+function buildPricedRecommendationValues(params: {
+  base: Omit<
+    RecommendationRow,
+    | "id"
+    | "sku"
+    | "title"
+    | "inventory_quantity"
+    | "last_synced_at"
+    | "status"
+    | "reason"
+  >;
+  snapshot: StoredSnapshot;
+  competitorPrice: number;
+  suggestedPrice: number;
+  costPrice: number;
+  costPriceVatMode: VatMode;
+  salesPriceVatMode: VatMode;
+  vatPercent: number;
+  minAllowed: ReturnType<typeof calculateMinAllowedPrice> | null;
+}): Omit<RecommendationRow, "id" | "sku" | "title" | "inventory_quantity" | "last_synced_at" | "status" | "reason"> {
+  const tb1 = calculateTb1({
+    sellingPrice: params.suggestedPrice,
+    salesPriceVatMode: params.salesPriceVatMode,
+    costPrice: params.costPrice,
+    costPriceVatMode: params.costPriceVatMode,
+    vatPercent: params.vatPercent
+  });
+
+  return {
+    ...params.base,
+    cheapest_competitor_domain: params.snapshot.domain,
+    cheapest_competitor_url: params.snapshot.url,
+    cheapest_competitor_price: params.competitorPrice,
+    cheapest_competitor_price_inc_vat: toIncVat(
+      params.competitorPrice,
+      params.vatPercent,
+      params.salesPriceVatMode
+    ),
+    cheapest_competitor_price_ex_vat: toExVat(
+      params.competitorPrice,
+      params.vatPercent,
+      params.salesPriceVatMode
+    ),
+    suggested_price: params.suggestedPrice,
+    suggested_price_inc_vat: tb1.sellingPriceIncVat,
+    suggested_price_ex_vat: tb1.sellingPriceExVat,
+    cost_price_inc_vat: tb1.costPriceIncVat,
+    cost_price_ex_vat: tb1.costPriceExVat,
+    min_allowed_price: params.minAllowed?.minAllowedPrice ?? null,
+    min_allowed_price_inc_vat: params.minAllowed?.minAllowedPriceIncVat ?? null,
+    min_allowed_price_ex_vat: params.minAllowed?.minAllowedPriceExVat ?? null,
+    tb1_amount: tb1.tb1Amount,
+    tb1_percent: tb1.tb1Percent,
+    margin_after_percent: tb1.tb1Percent
+  };
+}
+
+function normalizeRuleVatMode(value: VatMode | null | undefined, fallback: VatMode): VatMode {
+  return value === "ex_vat" || value === "inc_vat" ? value : fallback;
+}
+
+function insertRecommendation(
+  recommendation: Omit<RecommendationRow, "id" | "sku" | "title" | "inventory_quantity" | "last_synced_at">
+): void {
   getDatabase()
     .prepare(
       `
@@ -787,33 +1156,65 @@ function insertRecommendation(recommendation: Omit<RecommendationRow, "id" | "sk
         run_id,
         product_id,
         shopify_price_before,
+        shopify_price_inc_vat,
+        shopify_price_ex_vat,
+        shopify_price_vat_mode,
         cheapest_competitor_domain,
         cheapest_competitor_url,
         cheapest_competitor_price,
+        cheapest_competitor_price_inc_vat,
+        cheapest_competitor_price_ex_vat,
         suggested_price,
+        suggested_price_inc_vat,
+        suggested_price_ex_vat,
         cost_price,
+        cost_price_inc_vat,
+        cost_price_ex_vat,
+        cost_price_vat_mode,
+        sales_price_vat_mode,
+        vat_percent,
         min_margin_percent,
         min_allowed_price,
+        min_allowed_price_inc_vat,
+        min_allowed_price_ex_vat,
+        tb1_amount,
+        tb1_percent,
         margin_after_percent,
         status,
         reason,
         approved,
         created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
     .run(
       recommendation.run_id,
       recommendation.product_id,
       recommendation.shopify_price_before,
+      recommendation.shopify_price_inc_vat,
+      recommendation.shopify_price_ex_vat,
+      recommendation.shopify_price_vat_mode,
       recommendation.cheapest_competitor_domain,
       recommendation.cheapest_competitor_url,
       recommendation.cheapest_competitor_price,
+      recommendation.cheapest_competitor_price_inc_vat,
+      recommendation.cheapest_competitor_price_ex_vat,
       recommendation.suggested_price,
+      recommendation.suggested_price_inc_vat,
+      recommendation.suggested_price_ex_vat,
       recommendation.cost_price,
+      recommendation.cost_price_inc_vat,
+      recommendation.cost_price_ex_vat,
+      recommendation.cost_price_vat_mode,
+      recommendation.sales_price_vat_mode,
+      recommendation.vat_percent,
       recommendation.min_margin_percent,
       recommendation.min_allowed_price,
+      recommendation.min_allowed_price_inc_vat,
+      recommendation.min_allowed_price_ex_vat,
+      recommendation.tb1_amount,
+      recommendation.tb1_percent,
       recommendation.margin_after_percent,
       recommendation.status,
       recommendation.reason,
@@ -846,6 +1247,16 @@ function completeRun(runId: number, status: "completed" | "failed"): void {
     )
     .get(runId) as { count: number };
 
+  const shopifyErrors = getDatabase()
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM price_recommendations
+      WHERE run_id = ? AND status = 'SHOPIFY_FEL'
+      `
+    )
+    .get(runId) as { count: number };
+
   getDatabase()
     .prepare(
       `
@@ -866,7 +1277,7 @@ function completeRun(runId: number, status: "completed" | "failed"): void {
       skippedStock.count,
       stats.total_links_checked,
       stats.success_count,
-      stats.error_count,
+      stats.error_count + shopifyErrors.count,
       runId
     );
 }

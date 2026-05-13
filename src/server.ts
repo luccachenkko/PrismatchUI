@@ -29,7 +29,16 @@ import {
   setRecommendationApproval,
   startPriceRun
 } from "./priceRuns.js";
+import {
+  createScheduleFromBody,
+  listScheduleRows,
+  removeSchedule,
+  runScheduleNow,
+  startScheduleRunner,
+  updateScheduleFromBody
+} from "./schedules.js";
 import { fetchShopifyCatalogProducts } from "./shopify.js";
+import { normalizeVatMode } from "./vat.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -38,6 +47,7 @@ const publicDir = path.join(projectRoot, "public");
 loadDotEnv(path.join(projectRoot, ".env"));
 const preferredPort = Number.parseInt(process.env.PORT ?? "3000", 10);
 getDatabase();
+startScheduleRunner();
 
 const server = createServer(async (request, response) => {
   try {
@@ -72,6 +82,57 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
 
   if (method === "GET" && url.pathname === "/api/health") {
     sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/api/schedules") {
+    sendJson(response, 200, { schedules: listScheduleRows() });
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/api/schedules") {
+    try {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      sendJson(response, 201, { schedule: createScheduleFromBody(body) });
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  const scheduleRunNowMatch = url.pathname.match(/^\/api\/schedules\/(\d+)\/run-now$/);
+  if (method === "POST" && scheduleRunNowMatch) {
+    try {
+      const result = await runScheduleNow(Number(scheduleRunNowMatch[1]));
+      sendJson(response, 200, result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = message.includes("pÃ¥gÃ¥r redan") ? 409 : message.includes("hittades inte") ? 404 : 500;
+      sendJson(response, statusCode, { error: message });
+    }
+    return;
+  }
+
+  const scheduleMatch = url.pathname.match(/^\/api\/schedules\/(\d+)$/);
+  if (method === "PUT" && scheduleMatch) {
+    try {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      sendJson(response, 200, { schedule: updateScheduleFromBody(Number(scheduleMatch[1]), body) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = message.includes("hittades inte") ? 404 : 400;
+      sendJson(response, statusCode, { error: message });
+    }
+    return;
+  }
+
+  if (method === "DELETE" && scheduleMatch) {
+    try {
+      removeSchedule(Number(scheduleMatch[1]));
+      sendJson(response, 200, { ok: true });
+    } catch (error) {
+      sendJson(response, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
@@ -183,8 +244,12 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   if (method === "PUT" && pricingRuleMatch) {
     try {
       const body = await readJsonBody<PricingRuleInput>(request);
+      const vatPercent = normalizeOptionalNumber(body.vat_percent);
       const pricingRule = upsertPricingRule(Number(pricingRuleMatch[1]), {
         cost_price: normalizeOptionalNumber(body.cost_price),
+        cost_price_vat_mode: normalizeVatMode(body.cost_price_vat_mode, "ex_vat"),
+        sales_price_vat_mode: normalizeVatMode(body.sales_price_vat_mode, "inc_vat"),
+        vat_percent: vatPercent === null ? 25 : vatPercent,
         min_margin_percent: normalizeOptionalNumber(body.min_margin_percent),
         undercut_amount: normalizeOptionalNumber(body.undercut_amount),
         enabled: Boolean(body.enabled)

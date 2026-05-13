@@ -1,9 +1,14 @@
+import type { VatMode } from "./vat.js";
+
 export type ProductInput = {
   sku: string;
   produktnamn?: string;
   shopifyProductId: string;
   shopifyVariantId: string;
   inkopspris: number;
+  costPriceVatMode?: VatMode;
+  salesPriceVatMode?: VatMode;
+  vatPercent?: number;
   minMarginalProcent: number;
   undercutKr: number;
   aktiv: boolean;
@@ -21,8 +26,13 @@ export type ShopifyVariantState = {
   variantId: string;
   productTitle: string;
   variantTitle: string;
+  title: string;
+  vendor: string | null;
+  productType: string | null;
+  barcode: string | null;
   price: number;
   inventoryQuantity: number;
+  active: boolean;
 };
 
 export type ShopifyCatalogProduct = {
@@ -54,6 +64,7 @@ export type RecommendationStatus =
   | "SKIPPAD_INAKTIV"
   | "SKIPPAD_EGET_LAGER_0"
   | "SAKNAR_INKOPSPRIS"
+  | "SAKNAR_MIN_MARGINAL"
   | "SAKNAR_LANKAR"
   | "INGET_PRIS"
   | "BLOCKERAD_MARGINAL"
