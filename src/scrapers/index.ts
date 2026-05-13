@@ -14,12 +14,17 @@ import { scrapeVitvarudelen } from "./vitvarudelen.js";
 
 type Scraper = (url: string) => Promise<number>;
 
-type ScraperEntry = {
+export type ScraperEntry = {
   name: string;
   scrape: Scraper;
 };
 
-const SCRAPERS: Array<{ match: string; entry: ScraperEntry }> = [
+export type ScraperMatch = {
+  match: string;
+  entry: ScraperEntry;
+};
+
+const SCRAPERS: ScraperMatch[] = [
   { match: "hemmabutiken.se", entry: { name: "Hemmabutiken", scrape: scrapeHemmabutiken } },
   { match: "hemmy.se", entry: { name: "Hemmy", scrape: scrapeHemmy } },
   { match: "cdon.se", entry: { name: "CDON", scrape: scrapeCdon } },
@@ -99,7 +104,7 @@ export async function scrapePriceForLink(link: LinkInput): Promise<ScrapedPriceR
   }
 }
 
-function findScraper(domain: string): { match: string; entry: ScraperEntry } | null {
+export function findScraper(domain: string): ScraperMatch | null {
   return SCRAPERS.find((item) => domain === item.match || domain.endsWith(`.${item.match}`)) ?? null;
 }
 

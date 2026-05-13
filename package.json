@@ -13,6 +13,7 @@
     "frontend:build": "cd frontend && npm run build",
     "agent:dev": "tsx src/agent/telegramAgent.ts",
     "agent:start": "node dist/agent/telegramAgent.js",
+    "scraper:test": "tsx scripts/testScraper.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev:all": "node scripts/devAll.mjs",
