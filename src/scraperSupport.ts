@@ -1,4 +1,16 @@
-const supportedScraperDomains = new Set(["hemmabutiken.se", "cdon.se", "themobilestore.se"]);
+const supportedScraperDomains = new Set([
+  "hemmabutiken.se",
+  "hemmy.se",
+  "cdon.se",
+  "themobilestore.se",
+  "conrad.se",
+  "kulinagroup.se",
+  "matlagning.com",
+  "vitvarudelen.se",
+  "fortaltsbutiken.se",
+  "skrotahusvagn.com",
+  "campingspecialisten.se"
+]);
 
 export function extractDomainFromUrl(url: string): string {
   let parsed: URL;
@@ -21,5 +33,6 @@ export function extractDomainFromUrl(url: string): string {
 }
 
 export function hasSupportedScraper(domain: string): boolean {
-  return supportedScraperDomains.has(domain.toLowerCase().replace(/^www\./, ""));
+  const normalized = domain.toLowerCase().replace(/^www\./, "");
+  return supportedScraperDomains.has(normalized);
 }

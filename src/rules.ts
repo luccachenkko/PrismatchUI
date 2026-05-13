@@ -1,4 +1,5 @@
 import { roundMoney } from "./money.js";
+import { calculateMinAllowedPrice, calculateTb1, type VatMode } from "./vat.js";
 import type { ProductInput, Recommendation, ScrapedPriceResult, ShopifyVariantState } from "./types.js";
 
 export function calculateRecommendation(params: {
@@ -10,7 +11,16 @@ export function calculateRecommendation(params: {
 }): Recommendation {
   const { product, shopifyState, shopifyError, scrapedPrices } = params;
   const timestamp = params.timestamp ?? new Date().toISOString();
-  const minAllowedPrice = roundMoney(product.inkopspris / (1 - product.minMarginalProcent / 100));
+  const costPriceVatMode: VatMode = product.costPriceVatMode ?? "ex_vat";
+  const salesPriceVatMode: VatMode = product.salesPriceVatMode ?? "inc_vat";
+  const vatPercent = product.vatPercent ?? 25;
+  const minAllowed = calculateMinAllowedPrice({
+    costPrice: product.inkopspris,
+    costPriceVatMode,
+    salesPriceVatMode,
+    vatPercent,
+    minMarginPercent: product.minMarginalProcent
+  });
   const productName = shopifyState?.productTitle || product.produktnamn || product.sku;
 
   if (shopifyError || !shopifyState) {
@@ -18,7 +28,7 @@ export function calculateRecommendation(params: {
       produktnamn: productName,
       shopifyLager: null,
       shopifyPrisNu: null,
-      minstaTillatnaPris: minAllowedPrice,
+      minstaTillatnaPris: minAllowed.minAllowedPrice,
       status: "SHOPIFY_FEL",
       orsak: shopifyError ?? "Kunde inte hamta produkten fran Shopify.",
       timestamp
@@ -30,7 +40,7 @@ export function calculateRecommendation(params: {
       produktnamn: productName,
       shopifyLager: shopifyState.inventoryQuantity,
       shopifyPrisNu: shopifyState.price,
-      minstaTillatnaPris: minAllowedPrice,
+      minstaTillatnaPris: minAllowed.minAllowedPrice,
       status: "SKIPPAD_EGET_LAGER_0",
       orsak: "Produkten finns inte i lager i din Shopify-butik. Konkurrentlankar hamtades inte.",
       timestamp
@@ -46,42 +56,57 @@ export function calculateRecommendation(params: {
       produktnamn: productName,
       shopifyLager: shopifyState.inventoryQuantity,
       shopifyPrisNu: shopifyState.price,
-      minstaTillatnaPris: minAllowedPrice,
+      minstaTillatnaPris: minAllowed.minAllowedPrice,
       status: "INGET_PRIS",
       orsak: "Inget giltigt konkurrentpris kunde hamtas.",
       timestamp
     });
   }
 
-  const cheapest = validPrices.reduce((lowest, current) => {
-    if (lowest.price === null) {
-      return current;
-    }
-    return current.price !== null && current.price < lowest.price ? current : lowest;
+  const candidates = validPrices.map((priceResult) => {
+    const competitorPrice = priceResult.price as number;
+    const suggestedPrice = roundMoney(competitorPrice - product.undercutKr);
+    const tb1 = calculateTb1({
+      sellingPrice: suggestedPrice,
+      salesPriceVatMode,
+      costPrice: product.inkopspris,
+      costPriceVatMode,
+      vatPercent
+    });
+    return { priceResult, competitorPrice, suggestedPrice, tb1 };
   });
 
-  const cheapestPrice = cheapest.price as number;
-  const suggestedPrice = roundMoney(cheapestPrice - product.undercutKr);
-  const marginAfter = roundMoney(((suggestedPrice - product.inkopspris) / suggestedPrice) * 100);
+  const cheapestOverall = candidates.reduce((lowest, current) =>
+    current.competitorPrice < lowest.competitorPrice ? current : lowest
+  );
+  const eligibleCandidates = candidates.filter((candidate) => candidate.tb1.sellingPriceExVat >= minAllowed.minAllowedPriceExVat);
+
+  const cheapest = eligibleCandidates.length > 0
+    ? eligibleCandidates.reduce((lowest, current) => current.suggestedPrice < lowest.suggestedPrice ? current : lowest)
+    : cheapestOverall;
+
+  const cheapestPrice = cheapest.competitorPrice;
+  const suggestedPrice = cheapest.suggestedPrice;
+  const tb1Percent = cheapest.tb1.tb1Percent;
   const priceChangeKr = roundMoney(suggestedPrice - shopifyState.price);
   const priceChangePercent = roundMoney((priceChangeKr / shopifyState.price) * 100);
 
-  if (suggestedPrice < minAllowedPrice) {
+  if (eligibleCandidates.length === 0) {
     return {
       ...baseRecommendation(product, {
         produktnamn: productName,
         shopifyLager: shopifyState.inventoryQuantity,
         shopifyPrisNu: shopifyState.price,
-        minstaTillatnaPris: minAllowedPrice,
+        minstaTillatnaPris: minAllowed.minAllowedPrice,
         status: "BLOCKERAD_MARGINAL",
-        orsak: "Foreslaget pris gar under minsta marginal.",
+        orsak: "Foreslaget pris gar under minsta TB1.",
         timestamp
       }),
-      billigasteKonkurrent: cheapest.competitor,
-      billigasteUrl: cheapest.url,
+      billigasteKonkurrent: cheapest.priceResult.competitor,
+      billigasteUrl: cheapest.priceResult.url,
       billigasteKonkurrentpris: cheapestPrice,
       foreslagetPris: suggestedPrice,
-      marginalEfterProcent: marginAfter,
+      marginalEfterProcent: tb1Percent,
       prisandringKr: priceChangeKr,
       prisandringProcent: priceChangePercent
     };
@@ -93,16 +118,16 @@ export function calculateRecommendation(params: {
         produktnamn: productName,
         shopifyLager: shopifyState.inventoryQuantity,
         shopifyPrisNu: shopifyState.price,
-        minstaTillatnaPris: minAllowedPrice,
+        minstaTillatnaPris: minAllowed.minAllowedPrice,
         status: "INGEN_ANDRING",
         orsak: "Shopify-priset ligger redan pa foreslaget pris.",
         timestamp
       }),
-      billigasteKonkurrent: cheapest.competitor,
-      billigasteUrl: cheapest.url,
+      billigasteKonkurrent: cheapest.priceResult.competitor,
+      billigasteUrl: cheapest.priceResult.url,
       billigasteKonkurrentpris: cheapestPrice,
       foreslagetPris: suggestedPrice,
-      marginalEfterProcent: marginAfter,
+      marginalEfterProcent: tb1Percent,
       prisandringKr: priceChangeKr,
       prisandringProcent: priceChangePercent
     };
@@ -113,16 +138,16 @@ export function calculateRecommendation(params: {
       produktnamn: productName,
       shopifyLager: shopifyState.inventoryQuantity,
       shopifyPrisNu: shopifyState.price,
-      minstaTillatnaPris: minAllowedPrice,
+      minstaTillatnaPris: minAllowed.minAllowedPrice,
       status: "OK",
-      orsak: `Billigaste konkurrent ar ${cheapest.competitor} med ${cheapestPrice} kr. Foreslaget pris ar ${suggestedPrice} kr.`,
+      orsak: `Billigaste konkurrent ar ${cheapest.priceResult.competitor} med ${cheapestPrice} kr. Foreslaget pris ar ${suggestedPrice} kr.`,
       timestamp
     }),
-    billigasteKonkurrent: cheapest.competitor,
-    billigasteUrl: cheapest.url,
+    billigasteKonkurrent: cheapest.priceResult.competitor,
+    billigasteUrl: cheapest.priceResult.url,
     billigasteKonkurrentpris: cheapestPrice,
     foreslagetPris: suggestedPrice,
-    marginalEfterProcent: marginAfter,
+    marginalEfterProcent: tb1Percent,
     prisandringKr: priceChangeKr,
     prisandringProcent: priceChangePercent
   };

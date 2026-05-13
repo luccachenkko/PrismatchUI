@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { extractDomainFromUrl, hasSupportedScraper } from "./scraperSupport.js";
 import type { ShopifyCatalogProduct } from "./types.js";
+import type { VatMode } from "./vat.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -26,6 +27,9 @@ export type ProductRow = {
   created_at: string;
   updated_at: string;
   cost_price: number | null;
+  cost_price_vat_mode: VatMode | null;
+  sales_price_vat_mode: VatMode | null;
+  vat_percent: number | null;
   min_margin_percent: number | null;
   undercut_amount: number | null;
   pricing_enabled: number | null;
@@ -48,6 +52,9 @@ export type PricingRuleRow = {
   id: number;
   product_id: number;
   cost_price: number | null;
+  cost_price_vat_mode: VatMode;
+  sales_price_vat_mode: VatMode;
+  vat_percent: number;
   min_margin_percent: number | null;
   undercut_amount: number | null;
   enabled: number;
@@ -73,7 +80,15 @@ export type CompetitorLinkRow = {
 export type ProductDetail = {
   product: Omit<
     ProductRow,
-    "cost_price" | "min_margin_percent" | "undercut_amount" | "pricing_enabled" | "competitor_link_count" | "last_checked_at"
+    | "cost_price"
+    | "cost_price_vat_mode"
+    | "sales_price_vat_mode"
+    | "vat_percent"
+    | "min_margin_percent"
+    | "undercut_amount"
+    | "pricing_enabled"
+    | "competitor_link_count"
+    | "last_checked_at"
   >;
   pricingRule: PricingRuleRow | null;
   competitorLinks: CompetitorLinkRow[];
@@ -81,6 +96,9 @@ export type ProductDetail = {
 
 export type PricingRuleInput = {
   cost_price: number | null;
+  cost_price_vat_mode: VatMode;
+  sales_price_vat_mode: VatMode;
+  vat_percent: number;
   min_margin_percent: number | null;
   undercut_amount: number | null;
   enabled: boolean;
@@ -88,6 +106,48 @@ export type PricingRuleInput = {
 
 export type CompetitorLinkInput = {
   url: string;
+  enabled: boolean;
+};
+
+export type ScheduleTaskType =
+  | "shopify_sync_only"
+  | "price_match_only"
+  | "sync_and_price_match"
+  | "top_products_price_match";
+
+export type ScheduleScopeType = "all_active" | "in_stock" | "ready";
+
+export type ScheduleFrequencyType = "daily" | "hourly" | "weekly";
+
+export type ScheduleRow = {
+  id: number;
+  name: string;
+  task_type: ScheduleTaskType;
+  scope_type: ScheduleScopeType;
+  frequency_type: ScheduleFrequencyType;
+  time_of_day: string | null;
+  interval_hours: number | null;
+  weekday: number | null;
+  timezone: string;
+  enabled: number;
+  last_run_at: string | null;
+  last_run_id: number | null;
+  last_error: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_report_status?: string | null;
+};
+
+export type ScheduleInput = {
+  name: string;
+  task_type: ScheduleTaskType;
+  scope_type: ScheduleScopeType;
+  frequency_type: ScheduleFrequencyType;
+  time_of_day: string | null;
+  interval_hours: number | null;
+  weekday: number | null;
+  timezone: string;
   enabled: boolean;
 };
 
@@ -114,6 +174,9 @@ export function listProducts(): ProductRow[] {
       SELECT
         p.*,
         r.cost_price,
+        r.cost_price_vat_mode,
+        r.sales_price_vat_mode,
+        r.vat_percent,
         r.min_margin_percent,
         r.undercut_amount,
         r.enabled AS pricing_enabled,
@@ -220,15 +283,21 @@ export function upsertPricingRule(productId: number, input: PricingRuleInput): P
       INSERT INTO pricing_rules (
         product_id,
         cost_price,
+        cost_price_vat_mode,
+        sales_price_vat_mode,
+        vat_percent,
         min_margin_percent,
         undercut_amount,
         enabled,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(product_id) DO UPDATE SET
         cost_price = excluded.cost_price,
+        cost_price_vat_mode = excluded.cost_price_vat_mode,
+        sales_price_vat_mode = excluded.sales_price_vat_mode,
+        vat_percent = excluded.vat_percent,
         min_margin_percent = excluded.min_margin_percent,
         undercut_amount = excluded.undercut_amount,
         enabled = excluded.enabled,
@@ -238,6 +307,9 @@ export function upsertPricingRule(productId: number, input: PricingRuleInput): P
     .run(
       productId,
       input.cost_price,
+      input.cost_price_vat_mode,
+      input.sales_price_vat_mode,
+      input.vat_percent,
       input.min_margin_percent,
       input.undercut_amount,
       input.enabled ? 1 : 0,
@@ -300,6 +372,170 @@ export function deleteCompetitorLink(linkId: number): void {
   if (Number(result.changes) === 0) {
     throw new Error("Konkurrentlänken hittades inte.");
   }
+}
+
+export function listSchedules(): ScheduleRow[] {
+  return getDatabase()
+    .prepare(
+      `
+      SELECT
+        s.*,
+        pr.status AS latest_report_status
+      FROM schedules s
+      LEFT JOIN price_runs pr ON pr.id = s.last_run_id
+      ORDER BY s.enabled DESC, COALESCE(s.next_run_at, '9999-12-31') ASC, s.updated_at DESC
+      `
+    )
+    .all() as ScheduleRow[];
+}
+
+export function getSchedule(scheduleId: number): ScheduleRow | null {
+  const row = getDatabase()
+    .prepare(
+      `
+      SELECT
+        s.*,
+        pr.status AS latest_report_status
+      FROM schedules s
+      LEFT JOIN price_runs pr ON pr.id = s.last_run_id
+      WHERE s.id = ?
+      `
+    )
+    .get(scheduleId) as ScheduleRow | undefined;
+  return row ?? null;
+}
+
+export function createSchedule(input: ScheduleInput, nextRunAt: string | null): ScheduleRow {
+  const now = new Date().toISOString();
+  const result = getDatabase()
+    .prepare(
+      `
+      INSERT INTO schedules (
+        name,
+        task_type,
+        scope_type,
+        frequency_type,
+        time_of_day,
+        interval_hours,
+        weekday,
+        timezone,
+        enabled,
+        next_run_at,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(
+      input.name,
+      input.task_type,
+      input.scope_type,
+      input.frequency_type,
+      input.time_of_day,
+      input.interval_hours,
+      input.weekday,
+      input.timezone,
+      input.enabled ? 1 : 0,
+      nextRunAt,
+      now,
+      now
+    );
+
+  return getSchedule(Number(result.lastInsertRowid)) as ScheduleRow;
+}
+
+export function updateSchedule(scheduleId: number, input: ScheduleInput, nextRunAt: string | null): ScheduleRow {
+  const result = getDatabase()
+    .prepare(
+      `
+      UPDATE schedules
+      SET
+        name = ?,
+        task_type = ?,
+        scope_type = ?,
+        frequency_type = ?,
+        time_of_day = ?,
+        interval_hours = ?,
+        weekday = ?,
+        timezone = ?,
+        enabled = ?,
+        next_run_at = ?,
+        updated_at = ?
+      WHERE id = ?
+      `
+    )
+    .run(
+      input.name,
+      input.task_type,
+      input.scope_type,
+      input.frequency_type,
+      input.time_of_day,
+      input.interval_hours,
+      input.weekday,
+      input.timezone,
+      input.enabled ? 1 : 0,
+      nextRunAt,
+      new Date().toISOString(),
+      scheduleId
+    );
+
+  if (Number(result.changes) === 0) {
+    throw new Error("Schemat hittades inte.");
+  }
+
+  return getSchedule(scheduleId) as ScheduleRow;
+}
+
+export function deleteSchedule(scheduleId: number): void {
+  const result = getDatabase().prepare("DELETE FROM schedules WHERE id = ?").run(scheduleId);
+  if (Number(result.changes) === 0) {
+    throw new Error("Schemat hittades inte.");
+  }
+}
+
+export function listDueSchedules(nowIso: string): ScheduleRow[] {
+  return getDatabase()
+    .prepare(
+      `
+      SELECT *
+      FROM schedules
+      WHERE enabled = 1
+        AND next_run_at IS NOT NULL
+        AND next_run_at <= ?
+      ORDER BY next_run_at ASC, id ASC
+      `
+    )
+    .all(nowIso) as ScheduleRow[];
+}
+
+export function updateScheduleRunResult(
+  scheduleId: number,
+  result: { lastRunAt: string; lastRunId: number | null; lastError: string | null; nextRunAt: string | null }
+): ScheduleRow {
+  getDatabase()
+    .prepare(
+      `
+      UPDATE schedules
+      SET
+        last_run_at = ?,
+        last_run_id = ?,
+        last_error = ?,
+        next_run_at = ?,
+        updated_at = ?
+      WHERE id = ?
+      `
+    )
+    .run(
+      result.lastRunAt,
+      result.lastRunId,
+      result.lastError,
+      result.nextRunAt,
+      new Date().toISOString(),
+      scheduleId
+    );
+
+  return getSchedule(scheduleId) as ScheduleRow;
 }
 
 export function upsertProductsFromShopify(products: ShopifyCatalogProduct[]): number {
@@ -398,11 +634,24 @@ function getCompetitorLinkOrNull(linkId: number): CompetitorLinkRow | null {
 
 function validatePricingRule(input: PricingRuleInput): void {
   validateOptionalNonNegativeNumber(input.cost_price, "Inköpspris");
-  validateOptionalNonNegativeNumber(input.min_margin_percent, "Min marginal %");
+  validateVatMode(input.cost_price_vat_mode, "Inköpsprisets momsbas");
+  validateVatMode(input.sales_price_vat_mode, "Försäljningsprisets momsbas");
+  validateOptionalNonNegativeNumber(input.vat_percent, "Moms %");
+  validateOptionalNonNegativeNumber(input.min_margin_percent, "Min TB1 %");
   validateOptionalNonNegativeNumber(input.undercut_amount, "Undercut kr");
 
+  if (input.vat_percent > 100) {
+    throw new Error("Moms % måste vara 100 eller lägre.");
+  }
+
   if (input.min_margin_percent !== null && input.min_margin_percent >= 100) {
-    throw new Error("Min marginal % måste vara under 100.");
+    throw new Error("Min TB1 % måste vara under 100.");
+  }
+}
+
+function validateVatMode(value: VatMode, label: string): void {
+  if (value !== "ex_vat" && value !== "inc_vat") {
+    throw new Error(`${label} måste vara ex_vat eller inc_vat.`);
   }
 }
 
@@ -439,6 +688,9 @@ function migrate(database: DatabaseSync): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL UNIQUE,
       cost_price REAL,
+      cost_price_vat_mode TEXT NOT NULL DEFAULT 'ex_vat',
+      sales_price_vat_mode TEXT NOT NULL DEFAULT 'inc_vat',
+      vat_percent REAL NOT NULL DEFAULT 25,
       min_margin_percent REAL,
       undercut_amount REAL,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -501,8 +753,24 @@ function migrate(database: DatabaseSync): void {
       cheapest_competitor_price REAL,
       suggested_price REAL,
       cost_price REAL,
+      cost_price_inc_vat REAL,
+      cost_price_ex_vat REAL,
+      cost_price_vat_mode TEXT NOT NULL DEFAULT 'ex_vat',
+      sales_price_vat_mode TEXT NOT NULL DEFAULT 'inc_vat',
+      vat_percent REAL NOT NULL DEFAULT 25,
+      shopify_price_inc_vat REAL,
+      shopify_price_ex_vat REAL,
+      shopify_price_vat_mode TEXT NOT NULL DEFAULT 'inc_vat',
+      cheapest_competitor_price_inc_vat REAL,
+      cheapest_competitor_price_ex_vat REAL,
+      suggested_price_inc_vat REAL,
+      suggested_price_ex_vat REAL,
       min_margin_percent REAL,
       min_allowed_price REAL,
+      min_allowed_price_inc_vat REAL,
+      min_allowed_price_ex_vat REAL,
+      tb1_amount REAL,
+      tb1_percent REAL,
       margin_after_percent REAL,
       status TEXT NOT NULL,
       reason TEXT NOT NULL,
@@ -525,5 +793,88 @@ function migrate(database: DatabaseSync): void {
       FOREIGN KEY (recommendation_id) REFERENCES price_recommendations(id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS schedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      frequency_type TEXT NOT NULL,
+      time_of_day TEXT,
+      interval_hours INTEGER,
+      weekday INTEGER,
+      timezone TEXT NOT NULL DEFAULT 'Europe/Stockholm',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at TEXT,
+      last_run_id INTEGER,
+      last_error TEXT,
+      next_run_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (last_run_id) REFERENCES price_runs(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_schedules_due
+      ON schedules(enabled, next_run_at);
   `);
+
+  ensureColumn(database, "pricing_rules", "cost_price_vat_mode", "TEXT NOT NULL DEFAULT 'ex_vat'");
+  ensureColumn(database, "pricing_rules", "sales_price_vat_mode", "TEXT NOT NULL DEFAULT 'inc_vat'");
+  ensureColumn(database, "pricing_rules", "vat_percent", "REAL NOT NULL DEFAULT 25");
+
+  ensureColumn(database, "price_recommendations", "cost_price_inc_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "cost_price_ex_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "cost_price_vat_mode", "TEXT NOT NULL DEFAULT 'ex_vat'");
+  ensureColumn(database, "price_recommendations", "sales_price_vat_mode", "TEXT NOT NULL DEFAULT 'inc_vat'");
+  ensureColumn(database, "price_recommendations", "vat_percent", "REAL NOT NULL DEFAULT 25");
+  ensureColumn(database, "price_recommendations", "shopify_price_inc_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "shopify_price_ex_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "shopify_price_vat_mode", "TEXT NOT NULL DEFAULT 'inc_vat'");
+  ensureColumn(database, "price_recommendations", "cheapest_competitor_price_inc_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "cheapest_competitor_price_ex_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "suggested_price_inc_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "suggested_price_ex_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "min_allowed_price_inc_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "min_allowed_price_ex_vat", "REAL");
+  ensureColumn(database, "price_recommendations", "tb1_amount", "REAL");
+  ensureColumn(database, "price_recommendations", "tb1_percent", "REAL");
+
+  database.exec(`
+    UPDATE pricing_rules
+    SET cost_price_vat_mode = 'ex_vat'
+    WHERE cost_price_vat_mode IS NULL OR cost_price_vat_mode NOT IN ('ex_vat', 'inc_vat');
+
+    UPDATE pricing_rules
+    SET sales_price_vat_mode = 'inc_vat'
+    WHERE sales_price_vat_mode IS NULL OR sales_price_vat_mode NOT IN ('ex_vat', 'inc_vat');
+
+    UPDATE pricing_rules
+    SET vat_percent = 25
+    WHERE vat_percent IS NULL;
+
+    UPDATE price_recommendations
+    SET cost_price_vat_mode = 'ex_vat'
+    WHERE cost_price_vat_mode IS NULL OR cost_price_vat_mode NOT IN ('ex_vat', 'inc_vat');
+
+    UPDATE price_recommendations
+    SET sales_price_vat_mode = 'inc_vat'
+    WHERE sales_price_vat_mode IS NULL OR sales_price_vat_mode NOT IN ('ex_vat', 'inc_vat');
+
+    UPDATE price_recommendations
+    SET shopify_price_vat_mode = sales_price_vat_mode
+    WHERE shopify_price_vat_mode IS NULL OR shopify_price_vat_mode NOT IN ('ex_vat', 'inc_vat');
+
+    UPDATE price_recommendations
+    SET vat_percent = 25
+    WHERE vat_percent IS NULL;
+  `);
+}
+
+function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
 }

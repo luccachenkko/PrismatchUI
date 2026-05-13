@@ -35,9 +35,13 @@ type NodesResponse = {
         sku: string | null;
         price: string;
         inventoryQuantity: number | null;
+        barcode: string | null;
         product: {
           id: string;
           title: string;
+          vendor: string | null;
+          productType: string | null;
+          status: string;
         };
       }
     | null
@@ -182,9 +186,13 @@ export async function fetchShopifyVariantStatesByVariantIds(
               sku
               price
               inventoryQuantity
+              barcode
               product {
                 id
                 title
+                vendor
+                productType
+                status
               }
             }
           }
@@ -204,13 +212,22 @@ export async function fetchShopifyVariantStatesByVariantIds(
         variantId: node.id,
         productTitle: node.product.title,
         variantTitle: node.title,
+        title: formatVariantDisplayTitle(node.product.title, node.title),
+        vendor: node.product.vendor,
+        productType: node.product.productType,
+        barcode: node.barcode,
         price: roundMoney(Number.parseFloat(node.price)),
-        inventoryQuantity: node.inventoryQuantity ?? 0
+        inventoryQuantity: node.inventoryQuantity ?? 0,
+        active: node.product.status === "ACTIVE"
       });
     }
   }
 
   return result;
+}
+
+function formatVariantDisplayTitle(productTitle: string, variantTitle: string): string {
+  return variantTitle === "Default Title" ? productTitle : `${productTitle} - ${variantTitle}`;
 }
 
 export async function updateShopifyPrices(

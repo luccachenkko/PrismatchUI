@@ -6,3 +6,6 @@ dist/
 build/
 *.log
 data/
+
+# Generated reports and runtime data
+output/**

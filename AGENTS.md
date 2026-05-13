@@ -89,3 +89,33 @@ After changes, run:
 - npm run build or npm run typecheck if scripts exist
 
 If a command cannot run because .env or credentials are missing, say that clearly.
+
+## UI design rules
+
+When working on frontend/UI files, read and follow:
+
+docs/Uncodixfy.md
+
+The UI should be clean, practical, and product-like. Avoid generic AI dashboard styling.
+
+Do not use:
+- fake hero sections inside the app
+- decorative copy
+- gradients
+- glassmorphism
+- huge rounded cards
+- floating panels
+- fake charts
+- unnecessary KPI cards
+- decorative badges
+- overanimated hover effects
+- mockdata or fake UI content
+
+Use a normal internal-tool layout:
+- clear top navigation or simple sidebar
+- dense but readable tables
+- straightforward forms
+- standard buttons
+- calm colors
+- clear status labels only when functional
+- real product data only
