@@ -11,9 +11,16 @@ import {
   formatScheduleList,
   formatScheduleRunResult,
   formatScheduleUpdated,
-  formatDate
+  formatDate,
+  formatMoney
 } from "./formatTelegram.js";
-import type { SchedulePayload, ScheduleScopeType, ScheduleTaskType } from "./telegramTypes.js";
+import type { CompetitorLink, SchedulePayload, ScheduleScopeType, ScheduleTaskType } from "./telegramTypes.js";
+import { createAgentScraperJob, getAgentScraperJob, listAgentScraperJobs } from "../db.js";
+import type { AgentScraperJobRow } from "../db.js";
+import { findScraper } from "../scrapers/index.js";
+import { domainFromUrl } from "../scrapers/shared.js";
+import { testScraperUrl } from "../scraperTest.js";
+import type { ScraperTestResult } from "../scraperTest.js";
 
 export type CommandContext = {
   chatId: number;
@@ -48,6 +55,14 @@ export async function handleTelegramCommand(context: CommandContext): Promise<st
       return links(context.client, args);
     case "/lagg-lank":
       return addLink(context.client, args);
+    case "/testa-lank":
+      return testLink(args);
+    case "/testa-lankar":
+      return testLinks(context.client, args);
+    case "/forbered-scraper":
+      return prepareScraperJob(context.chatId, args);
+    case "/scraper-jobb":
+      return scraperJobs(args);
     case "/kor-prismatchning":
       return startPriceRun(context.client, args, context.dryRun);
     case "/senaste-rapport":
@@ -108,6 +123,21 @@ async function handlePlainText(context: CommandContext): Promise<string> {
     return deleteSchedule(context.client, [deleteScheduleMatch[1]]);
   }
 
+  const testLinkMatch = text.match(/^testa l[äa]nken\s+(https?:\/\/\S+)$/i);
+  if (testLinkMatch) {
+    return testLink([testLinkMatch[1]]);
+  }
+
+  const testLinksMatch = text.match(/^testa l[äa]nkarna p[åa]\s+(.+)$/i);
+  if (testLinksMatch) {
+    return testLinks(context.client, [testLinksMatch[1].trim()]);
+  }
+
+  const prepareScraperMatch = text.match(/^(?:f[öo]rbered scraper f[öo]r|skapa scraper-jobb f[öo]r)\s+(https?:\/\/\S+)$/i);
+  if (prepareScraperMatch) {
+    return prepareScraperJob(context.chatId, [prepareScraperMatch[1]]);
+  }
+
   if (normalized.includes("schema") || normalized.includes("schemalägg") || normalized.includes("schemalagg")) {
     const words = wordsFromText(text).filter((word) => !["skapa", "schema", "schemalägg", "schemalagg"].includes(word));
     return createSchedule(context.client, words);
@@ -144,6 +174,10 @@ function helpText(): string {
     "/regler <SKU> - visa prismatchningsregel",
     "/lankar <SKU> - lista konkurrentlänkar",
     "/lagg-lank <SKU> <URL> - lägg till konkurrentlänk",
+    "/testa-lank <URL> - testa scraper för en konkurrentlänk",
+    "/testa-lankar <SKU> - testa sparade konkurrentlänkar för en produkt",
+    "/forbered-scraper <URL> - skapa scraper-jobb och Codex-prompt",
+    "/scraper-jobb [id] - lista eller visa scraper-jobb",
     "",
     "Prismatchning och rapporter",
     "/kor-prismatchning alla - skapa ny rapport för befintligt helflöde",
@@ -254,6 +288,105 @@ async function addLink(client: AgentClient, args: string[]): Promise<string> {
     .join("\n");
 }
 
+async function testLink(args: string[]): Promise<string> {
+  const url = requireArg(args, "Använd: /testa-lank <URL>");
+  return formatScraperTestResult(await testScraperUrl(url));
+}
+
+async function testLinks(client: AgentClient, args: string[]): Promise<string> {
+  const sku = requireArg(args, "Använd: /testa-lankar <SKU>");
+  const detail = await findProductOrThrow(client, sku);
+  const linksToTest = detail.competitorLinks;
+
+  if (linksToTest.length === 0) {
+    return `Scrapertest ${detail.product.sku ?? sku}\nInga konkurrentlänkar finns sparade.`;
+  }
+
+  const results: Array<{ link: CompetitorLink; result: ScraperTestResult }> = [];
+  for (const link of linksToTest) {
+    results.push({ link, result: await testScraperUrl(link.url) });
+  }
+
+  const okCount = results.filter((item) => item.result.status === "PRICE_FOUND").length;
+  const missingCount = results.filter((item) => item.result.status === "SCRAPER_MISSING").length;
+  const failedCount = results.filter((item) => item.result.status === "SCRAPER_FAILED" || item.result.status === "INVALID_URL").length;
+
+  return [
+    `Scrapertest ${detail.product.sku ?? sku}`,
+    `Länkar testade: ${results.length}`,
+    `Fungerar: ${okCount}`,
+    `Scraper saknas: ${missingCount}`,
+    `Scraper misslyckades: ${failedCount}`,
+    "",
+    ...results.map((item, index) => formatScraperTestSummary(index + 1, item.link, item.result))
+  ].join("\n");
+}
+
+function prepareScraperJob(chatId: number, args: string[]): string {
+  const url = normalizeUrl(requireArg(args, "Använd: /forbered-scraper <URL>"));
+  const domain = domainFromUrl(url);
+  const scraper = findScraper(domain);
+
+  if (scraper) {
+    return [
+      `Scraper finns redan för ${domain}.`,
+      `Scraper: ${scraper.entry.name}`,
+      `Testa länken med: /testa-lank ${url}`
+    ].join("\n");
+  }
+
+  const codexPrompt = buildScraperCodexPrompt(url, domain);
+  const job = createAgentScraperJob({
+    chatId: String(chatId),
+    sku: null,
+    url,
+    domain,
+    status: "awaiting_codegen",
+    codexPrompt,
+    resultSummary: "Scraper saknas. Codex-prompt är skapad men inte körd."
+  });
+
+  return [
+    `Scraper-jobb skapat: #${job.id}`,
+    `Domän: ${job.domain}`,
+    `Status: ${formatScraperJobStatus(job.status)}`,
+    "Agenten kör inte Codex automatiskt.",
+    `Hämta prompten med: /scraper-jobb ${job.id}`
+  ].join("\n");
+}
+
+function scraperJobs(args: string[]): string {
+  const rawId = args[0]?.trim();
+  if (rawId) {
+    const jobId = requirePositiveId(args, "Använd: /scraper-jobb <id>");
+    const job = getAgentScraperJob(jobId);
+    if (!job) {
+      throw new Error(`Scraper-jobb #${jobId} hittades inte.`);
+    }
+
+    return formatScraperJobDetail(job);
+  }
+
+  const jobs = listAgentScraperJobs(10);
+  if (jobs.length === 0) {
+    return "Inga scraper-jobb finns ännu.";
+  }
+
+  return [
+    "Senaste scraper-jobb",
+    ...jobs.map((job) =>
+      [
+        `#${job.id} ${job.domain}`,
+        `Status: ${formatScraperJobStatus(job.status)}`,
+        job.sku ? `SKU: ${job.sku}` : null,
+        `Skapad: ${formatDate(job.created_at)}`
+      ]
+        .filter(Boolean)
+        .join("\n")
+    )
+  ].join("\n\n");
+}
+
 async function startPriceRun(client: AgentClient, args: string[], dryRun: boolean): Promise<string> {
   const scope = args[0]?.trim();
   if (!scope) {
@@ -328,6 +461,159 @@ async function deleteSchedule(client: AgentClient, args: string[]): Promise<stri
 
   await client.deleteSchedule(scheduleId);
   return formatScheduleDeleted(scheduleId);
+}
+
+function formatScraperTestResult(result: ScraperTestResult): string {
+  return [
+    "Scrapertest",
+    result.domain ? `Domän: ${result.domain}` : null,
+    `Status: ${formatScraperTestStatus(result)}`,
+    result.scraperName ? `Scraper: ${result.scraperName}` : null,
+    result.price !== null ? `Pris: ${formatMoney(result.price)}` : null,
+    result.currency ? `Valuta: ${result.currency}` : null,
+    result.error ? `Felorsak: ${result.error}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatScraperTestSummary(index: number, link: CompetitorLink, result: ScraperTestResult): string {
+  const details =
+    result.status === "PRICE_FOUND" && result.price !== null
+      ? `Pris: ${formatMoney(result.price)}`
+      : result.error
+        ? `Fel: ${result.error}`
+        : null;
+
+  return [
+    `${index}. ${result.domain ?? link.domain}`,
+    `Status: ${formatScraperTestStatus(result)}`,
+    `URL: ${link.url}`,
+    link.enabled !== 1 ? "Aktiv: nej" : null,
+    details
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatScraperTestStatus(result: ScraperTestResult): string {
+  if (result.status === "PRICE_FOUND") return "OK";
+  if (result.status === "SCRAPER_MISSING") return "scraper saknas";
+  if (result.status === "INVALID_URL") return "ogiltig URL";
+  return "scraper misslyckades";
+}
+
+function formatScraperJobDetail(job: AgentScraperJobRow): string {
+  const prompt = job.codex_prompt ?? "Prompt saknas.";
+
+  return [
+    `Scraper-jobb #${job.id}`,
+    `Status: ${formatScraperJobStatus(job.status)}`,
+    `Domän: ${job.domain}`,
+    `URL: ${job.url}`,
+    job.sku ? `SKU: ${job.sku}` : "SKU: -",
+    `Skapad: ${formatDate(job.created_at)}`,
+    `Uppdaterad: ${formatDate(job.updated_at)}`,
+    "",
+    `Prompt-preview: ${previewText(prompt, 280)}`,
+    "",
+    `Nästa steg: ${nextScraperJobStep(job)}`,
+    "",
+    "Codex-prompt:",
+    prompt
+  ].join("\n");
+}
+
+function formatScraperJobStatus(status: string): string {
+  const labels: Record<string, string> = {
+    created: "skapad",
+    awaiting_codegen: "väntar på manuell Codex-körning",
+    generating: "genererar",
+    testing: "testar",
+    awaiting_user_approval: "väntar på godkännande",
+    approved: "godkänd",
+    rejected: "avvisad",
+    failed: "misslyckad"
+  };
+
+  return labels[status] ?? status;
+}
+
+function nextScraperJobStep(job: AgentScraperJobRow): string {
+  if (job.status === "awaiting_codegen" || job.status === "created") {
+    return "Kopiera Codex-prompten och kör den manuellt. Agenten kör inte Codex automatiskt.";
+  }
+
+  if (job.status === "failed") {
+    return "Läs felorsaken och skapa ett nytt jobb om URL eller domän fortfarande behöver scraper.";
+  }
+
+  if (job.status === "approved") {
+    return "Ingen åtgärd krävs.";
+  }
+
+  return "Granska jobbstatus innan nästa manuella steg.";
+}
+
+function buildScraperCodexPrompt(url: string, domain: string): string {
+  const fileName = `${safeDomainFileName(domain)}.ts`;
+  const commandUrl = url.replace(/"/g, '\\"');
+
+  return [
+    "Du arbetar i mitt befintliga Shopify-prismatchningsprojekt i C:\\Dev\\PrismatchUI.",
+    "",
+    "Mål:",
+    `Skapa en riktig scraper för domänen ${domain} och testa den mot denna verkliga URL:`,
+    url,
+    "",
+    "Krav:",
+    `- Skapa src/scrapers/${fileName}.`,
+    "- Återanvänd helpers från src/scrapers/shared.ts.",
+    "- Registrera scrapern i src/scrapers/index.ts.",
+    "- Lägg domänen i src/scraperSupport.ts om projektet använder den filen.",
+    "- Skapa inte mockdata, fake-data eller fallbackdata som låtsas vara riktig.",
+    "- Skriv inte över befintliga scrapers.",
+    "- Ändra inte Shopify-kod.",
+    "- Ändra inte frontend.",
+    "- Ändra inte .env.",
+    "- Uppdatera inte Shopify.",
+    "- Godkänn inga prisändringar.",
+    "- Gör minsta stabila implementation.",
+    "",
+    "Scraperbeteende:",
+    "- Hämta endast pris från den riktiga produktsidan.",
+    "- Hämta inte och använd inte konkurrentens lagerstatus.",
+    "- Returnera ett numeriskt pris i SEK på samma sätt som befintliga scrapers.",
+    "- Kasta ett tydligt fel om pris inte hittas.",
+    "",
+    "Verifiering:",
+    `- Kör npm run scraper:test -- \"${commandUrl}\"`,
+    "- Kör npm run typecheck",
+    "",
+    "Rapportera exakt:",
+    "- ändrade filer",
+    "- testresultat",
+    "- eventuell felorsak om scrapern inte kan verifieras"
+  ].join("\n");
+}
+
+function safeDomainFileName(domain: string): string {
+  const normalized = domain
+    .toLowerCase()
+    .replace(/^www\./, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "scraper";
+}
+
+function previewText(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+
+  return `${compact.slice(0, maxLength - 3)}...`;
 }
 
 function parseSchedulePayload(rawArgs: string[]): SchedulePayload {

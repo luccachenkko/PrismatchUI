@@ -1,4 +1,5 @@
 import type { LinkInput, ScrapedPriceResult } from "../types.js";
+import { scrapeBygghemma } from "./bygghemma-se.js";
 import { scrapeCdon } from "./cdon.js";
 import { scrapeCampingspecialisten } from "./campingspecialisten.js";
 import { scrapeConrad } from "./conrad.js";
@@ -25,6 +26,7 @@ export type ScraperMatch = {
 };
 
 const SCRAPERS: ScraperMatch[] = [
+  { match: "bygghemma.se", entry: { name: "Bygghemma", scrape: scrapeBygghemma } },
   { match: "hemmabutiken.se", entry: { name: "Hemmabutiken", scrape: scrapeHemmabutiken } },
   { match: "hemmy.se", entry: { name: "Hemmy", scrape: scrapeHemmy } },
   { match: "cdon.se", entry: { name: "CDON", scrape: scrapeCdon } },

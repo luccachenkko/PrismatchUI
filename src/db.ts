@@ -151,6 +151,50 @@ export type ScheduleInput = {
   enabled: boolean;
 };
 
+export type AgentScraperJobStatus =
+  | "created"
+  | "awaiting_codegen"
+  | "generating"
+  | "testing"
+  | "awaiting_user_approval"
+  | "approved"
+  | "rejected"
+  | "failed";
+
+export type AgentScraperJobRow = {
+  id: number;
+  chat_id: string;
+  sku: string | null;
+  url: string;
+  domain: string;
+  status: AgentScraperJobStatus;
+  codex_prompt: string | null;
+  test_output: string | null;
+  result_summary: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentScraperJobEventRow = {
+  id: number;
+  job_id: number;
+  level: string;
+  message: string;
+  data_json: string | null;
+  created_at: string;
+};
+
+export type AgentScraperJobInput = {
+  chatId: string;
+  sku?: string | null;
+  url: string;
+  domain: string;
+  status: AgentScraperJobStatus;
+  codexPrompt?: string | null;
+  testOutput?: string | null;
+  resultSummary?: string | null;
+};
+
 let db: DatabaseSync | null = null;
 
 export function getDatabase(): DatabaseSync {
@@ -538,6 +582,98 @@ export function updateScheduleRunResult(
   return getSchedule(scheduleId) as ScheduleRow;
 }
 
+export function createAgentScraperJob(input: AgentScraperJobInput): AgentScraperJobRow {
+  const now = new Date().toISOString();
+  const database = getDatabase();
+  const result = database
+    .prepare(
+      `
+      INSERT INTO agent_scraper_jobs (
+        chat_id,
+        sku,
+        url,
+        domain,
+        status,
+        codex_prompt,
+        test_output,
+        result_summary,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(
+      input.chatId,
+      input.sku ?? null,
+      input.url,
+      input.domain,
+      input.status,
+      input.codexPrompt ?? null,
+      input.testOutput ?? null,
+      input.resultSummary ?? null,
+      now,
+      now
+    );
+
+  const jobId = Number(result.lastInsertRowid);
+  addAgentScraperJobEvent(jobId, "info", "Scraper-jobb skapat.", { status: input.status, domain: input.domain });
+  return getAgentScraperJob(jobId) as AgentScraperJobRow;
+}
+
+export function listAgentScraperJobs(limit = 10): AgentScraperJobRow[] {
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 50) : 10;
+  return getDatabase()
+    .prepare(
+      `
+      SELECT *
+      FROM agent_scraper_jobs
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+      `
+    )
+    .all(safeLimit) as AgentScraperJobRow[];
+}
+
+export function getAgentScraperJob(jobId: number): AgentScraperJobRow | null {
+  const row = getDatabase().prepare("SELECT * FROM agent_scraper_jobs WHERE id = ?").get(jobId) as
+    | AgentScraperJobRow
+    | undefined;
+  return row ?? null;
+}
+
+export function addAgentScraperJobEvent(
+  jobId: number,
+  level: string,
+  message: string,
+  data: Record<string, unknown> | null = null
+): AgentScraperJobEventRow {
+  const result = getDatabase()
+    .prepare(
+      `
+      INSERT INTO agent_scraper_job_events (
+        job_id,
+        level,
+        message,
+        data_json,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+      `
+    )
+    .run(jobId, level, message, data ? JSON.stringify(data) : null, new Date().toISOString());
+
+  const event = getDatabase()
+    .prepare("SELECT * FROM agent_scraper_job_events WHERE id = ?")
+    .get(Number(result.lastInsertRowid)) as AgentScraperJobEventRow | undefined;
+
+  if (!event) {
+    throw new Error("Scraper-jobbevent kunde inte hittas efter skapande.");
+  }
+
+  return event;
+}
+
 export function upsertProductsFromShopify(products: ShopifyCatalogProduct[]): number {
   const database = getDatabase();
   const now = new Date().toISOString();
@@ -816,6 +952,36 @@ function migrate(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_schedules_due
       ON schedules(enabled, next_run_at);
+
+    CREATE TABLE IF NOT EXISTS agent_scraper_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      sku TEXT,
+      url TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      status TEXT NOT NULL,
+      codex_prompt TEXT,
+      test_output TEXT,
+      result_summary TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_scraper_job_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      level TEXT NOT NULL,
+      message TEXT NOT NULL,
+      data_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES agent_scraper_jobs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_scraper_jobs_created
+      ON agent_scraper_jobs(created_at DESC, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_scraper_job_events_job
+      ON agent_scraper_job_events(job_id, created_at ASC);
   `);
 
   ensureColumn(database, "pricing_rules", "cost_price_vat_mode", "TEXT NOT NULL DEFAULT 'ex_vat'");
