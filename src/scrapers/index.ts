@@ -6,6 +6,7 @@ import { scrapeConrad } from "./conrad.js";
 import { scrapeFortaltsbutiken } from "./fortaltsbutiken.js";
 import { scrapeHemmabutiken } from "./hemmabutiken.js";
 import { scrapeHemmy } from "./hemmy.js";
+import { scrapeKokochmer } from "./kokochmer-se.js";
 import { scrapeKulina } from "./kulina.js";
 import { scrapeMatlagning } from "./matlagning.js";
 import { domainFromUrl, isScraperDebugEnabled } from "./shared.js";
@@ -29,6 +30,7 @@ const SCRAPERS: ScraperMatch[] = [
   { match: "bygghemma.se", entry: { name: "Bygghemma", scrape: scrapeBygghemma } },
   { match: "hemmabutiken.se", entry: { name: "Hemmabutiken", scrape: scrapeHemmabutiken } },
   { match: "hemmy.se", entry: { name: "Hemmy", scrape: scrapeHemmy } },
+  { match: "kokochmer.se", entry: { name: "Kok & Mer", scrape: scrapeKokochmer } },
   { match: "cdon.se", entry: { name: "CDON", scrape: scrapeCdon } },
   { match: "themobilestore.se", entry: { name: "TheMobileStore", scrape: scrapeTheMobileStore } },
   { match: "conrad.se", entry: { name: "Conrad", scrape: scrapeConrad } },

@@ -7,7 +7,7 @@ import path from "node:path";
 import { addAgentScraperJobEvent, updateAgentScraperJob } from "../db.js";
 import type { AgentScraperJobRow } from "../db.js";
 
-type CommandResult = {
+export type CommandResult = {
   command: string;
   args: string[];
   exitCode: number | null;
@@ -392,7 +392,7 @@ function codexCommandDisplay(): string {
   return `${process.env.CODEX_CMD?.trim() || "codex"} exec --sandbox workspace-write --skip-git-repo-check -`;
 }
 
-async function verifyVerificationTools(
+export async function verifyVerificationTools(
   projectRoot: string,
   workDir: string
 ): Promise<{ tsxCli: string; tscBin: string; nodeModulesDir: string }> {
@@ -416,7 +416,7 @@ async function verifyVerificationTools(
   return { tsxCli, tscBin, nodeModulesDir };
 }
 
-function runScraperTestProcess(
+export function runScraperTestProcess(
   workDir: string,
   url: string,
   tsxCli: string,
@@ -430,7 +430,7 @@ function runScraperTestProcess(
   });
 }
 
-function runTypecheckProcess(workDir: string, tscBin: string, nodeModulesDir: string, timeoutMs: number): Promise<CommandResult> {
+export function runTypecheckProcess(workDir: string, tscBin: string, nodeModulesDir: string, timeoutMs: number): Promise<CommandResult> {
   return runCommand(process.execPath, [tscBin, "--noEmit"], {
     cwd: workDir,
     timeoutMs,
@@ -580,7 +580,7 @@ async function writeRunnerDebug(filePath: string, debug: RunnerDebug): Promise<v
   await writeFile(filePath, JSON.stringify(debug, null, 2), "utf8");
 }
 
-async function writeProcessDebug(filePath: string, result: CommandResult, cwd: string): Promise<void> {
+export async function writeProcessDebug(filePath: string, result: CommandResult, cwd: string): Promise<void> {
   const debug: ProcessDebug = {
     cwd,
     command: result.command,
@@ -595,7 +595,7 @@ async function writeProcessDebug(filePath: string, result: CommandResult, cwd: s
   await writeFile(filePath, JSON.stringify(debug, null, 2), "utf8");
 }
 
-function firstRelevantLines(value: string, maxLines = 8): string {
+export function firstRelevantLines(value: string, maxLines = 8): string {
   const lines = value
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -614,7 +614,7 @@ function processSpawnFailure(label: string, result: CommandResult, cwd: string):
   ].join("\n");
 }
 
-function scraperTestFailureReason(result: CommandResult): string {
+export function scraperTestFailureReason(result: CommandResult): string {
   const reportError = parseReportValue(result.output, "Error");
   const base = reportError ?? firstRelevantLines(result.stderr || result.output);
   const blockerHint = scraperBlockerHint(result.output);
@@ -768,7 +768,7 @@ function buildDiffSummary(changes: FileChange[]): string {
     .join("\n\n");
 }
 
-function artifactFileName(filePath: string): string {
+export function artifactFileName(filePath: string): string {
   return filePath.replace(/[^a-zA-Z0-9._-]+/g, "__");
 }
 

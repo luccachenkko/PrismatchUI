@@ -2,6 +2,7 @@ const supportedScraperDomains = new Set([
   "bygghemma.se",
   "hemmabutiken.se",
   "hemmy.se",
+  "kokochmer.se",
   "cdon.se",
   "themobilestore.se",
   "conrad.se",

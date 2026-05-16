@@ -23,6 +23,8 @@ import { testScraperUrl } from "../scraperTest.js";
 import type { ScraperTestResult } from "../scraperTest.js";
 import { runScraperCodegenJob } from "./scraperCodegenWorker.js";
 import type { ScraperCodegenResult } from "./scraperCodegenWorker.js";
+import { approveScraperJob, rejectScraperJob } from "./scraperApprovalWorker.js";
+import type { ScraperApprovalResult } from "./scraperApprovalWorker.js";
 
 export type CommandContext = {
   chatId: number;
@@ -67,6 +69,10 @@ export async function handleTelegramCommand(context: CommandContext): Promise<st
       return scraperJobs(args);
     case "/skapa-scraper":
       return createScraperCandidate(args);
+    case "/godkann-scraper":
+      return approveScraperCandidate(args);
+    case "/avvisa-scraper":
+      return rejectScraperCandidate(args);
     case "/kor-prismatchning":
       return startPriceRun(context.client, args, context.dryRun);
     case "/senaste-rapport":
@@ -142,6 +148,16 @@ async function handlePlainText(context: CommandContext): Promise<string> {
     return prepareScraperJob(context.chatId, [prepareScraperMatch[1]]);
   }
 
+  const approveScraperMatch = text.match(/^godk[äa]nn scraper\s+(\d+)$/i);
+  if (approveScraperMatch) {
+    return approveScraperCandidate([approveScraperMatch[1]]);
+  }
+
+  const rejectScraperMatch = text.match(/^avvisa scraper\s+(\d+)$/i);
+  if (rejectScraperMatch) {
+    return rejectScraperCandidate([rejectScraperMatch[1]]);
+  }
+
   if (normalized.includes("schema") || normalized.includes("schemalägg") || normalized.includes("schemalagg")) {
     const words = wordsFromText(text).filter((word) => !["skapa", "schema", "schemalägg", "schemalagg"].includes(word));
     return createSchedule(context.client, words);
@@ -183,6 +199,8 @@ function helpText(): string {
     "/forbered-scraper <URL> - skapa scraper-jobb och Codex-prompt",
     "/scraper-jobb [id] - lista eller visa scraper-jobb",
     "/skapa-scraper <id> - kör Codex i isolerad arbetsmapp och skapa patch för granskning",
+    "/godkann-scraper <id> - applicera godkänd scraperkod",
+    "/avvisa-scraper <id> - avvisa scraperjobb utan att applicera",
     "",
     "Prismatchning och rapporter",
     "/kor-prismatchning alla - skapa ny rapport för befintligt helflöde",
@@ -412,6 +430,27 @@ async function createScraperCandidate(args: string[]): Promise<string> {
   return formatScraperCodegenResult(result);
 }
 
+async function approveScraperCandidate(args: string[]): Promise<string> {
+  const jobId = requirePositiveId(args, "Använd: /godkann-scraper <jobId>");
+  const job = getAgentScraperJob(jobId);
+  if (!job) {
+    throw new Error(`Scraper-jobb #${jobId} hittades inte.`);
+  }
+
+  return formatScraperApprovalResult(await approveScraperJob(job));
+}
+
+function rejectScraperCandidate(args: string[]): string {
+  const jobId = requirePositiveId(args, "Använd: /avvisa-scraper <jobId>");
+  const job = getAgentScraperJob(jobId);
+  if (!job) {
+    throw new Error(`Scraper-jobb #${jobId} hittades inte.`);
+  }
+
+  const result = rejectScraperJob(job);
+  return [`Scraper-jobb #${result.job.id} avvisat.`, "Inga filer applicerades."].join("\n");
+}
+
 async function startPriceRun(client: AgentClient, args: string[], dryRun: boolean): Promise<string> {
   const scope = args[0]?.trim();
   if (!scope) {
@@ -572,15 +611,19 @@ function nextScraperJobStep(job: AgentScraperJobRow): string {
   }
 
   if (job.status === "awaiting_user_approval") {
-    return "Patchen är skapad i .agent/jobs men appliceras inte automatiskt. /godkann-scraper kommer i senare steg.";
+    return `Granska artefakterna och kör /godkann-scraper ${job.id} eller /avvisa-scraper ${job.id}.`;
   }
 
   if (job.status === "failed") {
-    return "Läs felorsaken och skapa ett nytt jobb om URL eller domän fortfarande behöver scraper.";
+    return "Jobbet är misslyckat och kan inte godkännas. Läs felorsaken innan nästa steg.";
   }
 
   if (job.status === "approved") {
-    return "Ingen åtgärd krävs.";
+    return "Scraperkoden är applicerad i huvudprojektet.";
+  }
+
+  if (job.status === "rejected") {
+    return "Jobbet är avvisat. Inga filer applicerades.";
   }
 
   return "Granska jobbstatus innan nästa manuella steg.";
@@ -616,10 +659,40 @@ function formatScraperCodegenResult(result: ScraperCodegenResult): string {
     "typecheck: OK",
     `Artefakter: ${result.artifactDir}`,
     `Codex-kommando: ${result.codexCommand}`,
-    "Nästa steg: /godkann-scraper <id> kommer i senare steg, just nu appliceras inget automatiskt"
+    `Nästa steg: /godkann-scraper ${result.job.id} eller /avvisa-scraper ${result.job.id}`
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function formatScraperApprovalResult(result: ScraperApprovalResult): string {
+  if (!result.ok) {
+    return [
+      "Godkännande misslyckades.",
+      `Scraper-jobb #${result.job.id}`,
+      `Domän: ${result.job.domain}`,
+      "Status: failed",
+      `Steg som misslyckades: ${result.failedStep ?? "okänt"}`,
+      `Felorsak: ${result.error ?? "Okänt fel"}`,
+      result.rolledBack ? "Rollback genomförd." : null,
+      result.changedFiles.length > 0 ? `Ändrade filer:\n${result.changedFiles.join("\n")}` : null,
+      "Inget Shopify-flöde har körts.",
+      `Artefakter: ${result.artifactDir}`
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return [
+    `Scraper-jobb #${result.job.id} godkänt och applicerat.`,
+    `Domän: ${result.job.domain}`,
+    `URL: ${result.job.url}`,
+    "Ändrade filer:",
+    ...result.changedFiles,
+    "scraper:test i huvudprojektet: OK",
+    "typecheck i huvudprojektet: OK",
+    "Nästa steg: starta om backend om backend kör dist/server.js"
+  ].join("\n");
 }
 
 function buildScraperCodexPrompt(url: string, domain: string): string {
