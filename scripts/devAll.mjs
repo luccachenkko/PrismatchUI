@@ -57,6 +57,8 @@ function startTask(task) {
     console.error(`[dev:all] ${task.name} stoppade (${reason}). Stoppar övriga processer.`);
     shutdown(code ?? 1);
   });
+
+  return child;
 }
 
 function killProcessTree(child) {
@@ -102,12 +104,47 @@ function shutdown(exitCode = 0) {
   setTimeout(() => process.exit(exitCode), 750).unref();
 }
 
-console.log("[dev:all] Startar backend, frontend och Telegram-agent...");
-console.log("[dev:all] Avsluta alla med Ctrl+C.");
+async function waitForHttp(url, label, timeoutMs = 30_000) {
+  const startedAt = Date.now();
 
-for (const task of tasks) {
-  startTask(task);
+  while (!shuttingDown && Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        console.log(`[dev:all] ${label} redo.`);
+        return;
+      }
+    } catch {
+      // Service is still starting.
+    }
+
+    await sleep(500);
+  }
+
+  throw new Error(`${label} blev inte redo inom ${timeoutMs / 1000} sekunder (${url}).`);
 }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function startAll() {
+  console.log("[dev:all] Startar backend, frontend och Telegram-agent...");
+  console.log("[dev:all] Avsluta alla med Ctrl+C.");
+
+  startTask(tasks[0]);
+  await waitForHttp("http://localhost:3000/api/health", "Backend");
+
+  startTask(tasks[1]);
+  await waitForHttp("http://localhost:5173", "Frontend");
+
+  startTask(tasks[2]);
+}
+
+void startAll().catch((error) => {
+  console.error(`[dev:all] Kunde inte starta alla tjänster: ${error instanceof Error ? error.message : String(error)}`);
+  shutdown(1);
+});
 
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));

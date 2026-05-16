@@ -21,6 +21,8 @@ import { findScraper } from "../scrapers/index.js";
 import { domainFromUrl } from "../scrapers/shared.js";
 import { testScraperUrl } from "../scraperTest.js";
 import type { ScraperTestResult } from "../scraperTest.js";
+import { runScraperCodegenJob } from "./scraperCodegenWorker.js";
+import type { ScraperCodegenResult } from "./scraperCodegenWorker.js";
 
 export type CommandContext = {
   chatId: number;
@@ -63,6 +65,8 @@ export async function handleTelegramCommand(context: CommandContext): Promise<st
       return prepareScraperJob(context.chatId, args);
     case "/scraper-jobb":
       return scraperJobs(args);
+    case "/skapa-scraper":
+      return createScraperCandidate(args);
     case "/kor-prismatchning":
       return startPriceRun(context.client, args, context.dryRun);
     case "/senaste-rapport":
@@ -178,6 +182,7 @@ function helpText(): string {
     "/testa-lankar <SKU> - testa sparade konkurrentlänkar för en produkt",
     "/forbered-scraper <URL> - skapa scraper-jobb och Codex-prompt",
     "/scraper-jobb [id] - lista eller visa scraper-jobb",
+    "/skapa-scraper <id> - kör Codex i isolerad arbetsmapp och skapa patch för granskning",
     "",
     "Prismatchning och rapporter",
     "/kor-prismatchning alla - skapa ny rapport för befintligt helflöde",
@@ -387,6 +392,26 @@ function scraperJobs(args: string[]): string {
   ].join("\n\n");
 }
 
+async function createScraperCandidate(args: string[]): Promise<string> {
+  const jobId = requirePositiveId(args, "Använd: /skapa-scraper <jobId>");
+  const job = getAgentScraperJob(jobId);
+  if (!job) {
+    throw new Error(`Scraper-jobb #${jobId} hittades inte.`);
+  }
+
+  if (!job.codex_prompt?.trim()) {
+    throw new Error(`Scraper-jobb #${jobId} saknar Codex-prompt.`);
+  }
+
+  if (!["created", "awaiting_codegen", "failed"].includes(job.status)) {
+    throw new Error(`Scraper-jobb #${jobId} har status ${job.status} och kan inte kodgenereras.`);
+  }
+
+  console.log(`[agent] Startar /skapa-scraper ${jobId}. Detta kan ta flera minuter.`);
+  const result = await runScraperCodegenJob(job);
+  return formatScraperCodegenResult(result);
+}
+
 async function startPriceRun(client: AgentClient, args: string[], dryRun: boolean): Promise<string> {
   const scope = args[0]?.trim();
   if (!scope) {
@@ -516,6 +541,8 @@ function formatScraperJobDetail(job: AgentScraperJobRow): string {
     `Uppdaterad: ${formatDate(job.updated_at)}`,
     "",
     `Prompt-preview: ${previewText(prompt, 280)}`,
+    job.changed_files ? `Ändrade filer:\n${job.changed_files}` : null,
+    job.result_summary ? `Senaste resultat:\n${job.result_summary}` : null,
     "",
     `Nästa steg: ${nextScraperJobStep(job)}`,
     "",
@@ -544,6 +571,10 @@ function nextScraperJobStep(job: AgentScraperJobRow): string {
     return "Kopiera Codex-prompten och kör den manuellt. Agenten kör inte Codex automatiskt.";
   }
 
+  if (job.status === "awaiting_user_approval") {
+    return "Patchen är skapad i .agent/jobs men appliceras inte automatiskt. /godkann-scraper kommer i senare steg.";
+  }
+
   if (job.status === "failed") {
     return "Läs felorsaken och skapa ett nytt jobb om URL eller domän fortfarande behöver scraper.";
   }
@@ -553,6 +584,42 @@ function nextScraperJobStep(job: AgentScraperJobRow): string {
   }
 
   return "Granska jobbstatus innan nästa manuella steg.";
+}
+
+function formatScraperCodegenResult(result: ScraperCodegenResult): string {
+  if (!result.ok) {
+    return [
+      `Scraper-jobb #${result.job.id}`,
+      `Domän: ${result.job.domain}`,
+      "Status: failed",
+      `Steg: ${result.failedStep ?? "okänt"}`,
+      `Felorsak: ${result.error ?? "Okänt fel"}`,
+      result.changedFiles.length > 0 ? `Ändrade filer:\n${result.changedFiles.join("\n")}` : null,
+      result.disallowedFiles.length > 0 ? `Otillåtna filer:\n${result.disallowedFiles.join("\n")}` : null,
+      `Artefakter: ${result.artifactDir}`,
+      result.codexCommand ? `Codex-kommando: ${result.codexCommand}` : null
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return [
+    `Scraper-jobb #${result.job.id}`,
+    `Domän: ${result.job.domain}`,
+    `Testad URL: ${result.job.url}`,
+    "Status: klar för granskning",
+    result.foundPrice ? `Hittat pris: ${result.foundPrice}` : null,
+    result.currency ? `Valuta: ${result.currency}` : null,
+    "Ändrade filer:",
+    ...result.changedFiles,
+    "scraper:test: OK",
+    "typecheck: OK",
+    `Artefakter: ${result.artifactDir}`,
+    `Codex-kommando: ${result.codexCommand}`,
+    "Nästa steg: /godkann-scraper <id> kommer i senare steg, just nu appliceras inget automatiskt"
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function buildScraperCodexPrompt(url: string, domain: string): string {

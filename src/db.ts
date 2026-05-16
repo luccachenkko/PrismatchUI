@@ -169,7 +169,11 @@ export type AgentScraperJobRow = {
   domain: string;
   status: AgentScraperJobStatus;
   codex_prompt: string | null;
+  codex_output: string | null;
   test_output: string | null;
+  typecheck_output: string | null;
+  diff_patch: string | null;
+  changed_files: string | null;
   result_summary: string | null;
   created_at: string;
   updated_at: string;
@@ -191,7 +195,22 @@ export type AgentScraperJobInput = {
   domain: string;
   status: AgentScraperJobStatus;
   codexPrompt?: string | null;
+  codexOutput?: string | null;
   testOutput?: string | null;
+  typecheckOutput?: string | null;
+  diffPatch?: string | null;
+  changedFiles?: string | null;
+  resultSummary?: string | null;
+};
+
+export type AgentScraperJobUpdate = {
+  status?: AgentScraperJobStatus;
+  codexPrompt?: string | null;
+  codexOutput?: string | null;
+  testOutput?: string | null;
+  typecheckOutput?: string | null;
+  diffPatch?: string | null;
+  changedFiles?: string | null;
   resultSummary?: string | null;
 };
 
@@ -595,12 +614,16 @@ export function createAgentScraperJob(input: AgentScraperJobInput): AgentScraper
         domain,
         status,
         codex_prompt,
+        codex_output,
         test_output,
+        typecheck_output,
+        diff_patch,
+        changed_files,
         result_summary,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
     .run(
@@ -610,7 +633,11 @@ export function createAgentScraperJob(input: AgentScraperJobInput): AgentScraper
       input.domain,
       input.status,
       input.codexPrompt ?? null,
+      input.codexOutput ?? null,
       input.testOutput ?? null,
+      input.typecheckOutput ?? null,
+      input.diffPatch ?? null,
+      input.changedFiles ?? null,
       input.resultSummary ?? null,
       now,
       now
@@ -618,6 +645,49 @@ export function createAgentScraperJob(input: AgentScraperJobInput): AgentScraper
 
   const jobId = Number(result.lastInsertRowid);
   addAgentScraperJobEvent(jobId, "info", "Scraper-jobb skapat.", { status: input.status, domain: input.domain });
+  return getAgentScraperJob(jobId) as AgentScraperJobRow;
+}
+
+export function updateAgentScraperJob(jobId: number, input: AgentScraperJobUpdate): AgentScraperJobRow {
+  const existing = getAgentScraperJob(jobId);
+  if (!existing) {
+    throw new Error(`Scraper-jobb #${jobId} hittades inte.`);
+  }
+
+  getDatabase()
+    .prepare(
+      `
+      UPDATE agent_scraper_jobs
+      SET
+        status = ?,
+        codex_prompt = ?,
+        codex_output = ?,
+        test_output = ?,
+        typecheck_output = ?,
+        diff_patch = ?,
+        changed_files = ?,
+        result_summary = ?,
+        updated_at = ?
+      WHERE id = ?
+      `
+    )
+    .run(
+      input.status ?? existing.status,
+      input.codexPrompt !== undefined ? input.codexPrompt : existing.codex_prompt,
+      input.codexOutput !== undefined ? input.codexOutput : existing.codex_output,
+      input.testOutput !== undefined ? input.testOutput : existing.test_output,
+      input.typecheckOutput !== undefined ? input.typecheckOutput : existing.typecheck_output,
+      input.diffPatch !== undefined ? input.diffPatch : existing.diff_patch,
+      input.changedFiles !== undefined ? input.changedFiles : existing.changed_files,
+      input.resultSummary !== undefined ? input.resultSummary : existing.result_summary,
+      new Date().toISOString(),
+      jobId
+    );
+
+  if (input.status && input.status !== existing.status) {
+    addAgentScraperJobEvent(jobId, "info", `Status ändrad till ${input.status}.`, { status: input.status });
+  }
+
   return getAgentScraperJob(jobId) as AgentScraperJobRow;
 }
 
@@ -961,7 +1031,11 @@ function migrate(database: DatabaseSync): void {
       domain TEXT NOT NULL,
       status TEXT NOT NULL,
       codex_prompt TEXT,
+      codex_output TEXT,
       test_output TEXT,
+      typecheck_output TEXT,
+      diff_patch TEXT,
+      changed_files TEXT,
       result_summary TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -1004,6 +1078,11 @@ function migrate(database: DatabaseSync): void {
   ensureColumn(database, "price_recommendations", "min_allowed_price_ex_vat", "REAL");
   ensureColumn(database, "price_recommendations", "tb1_amount", "REAL");
   ensureColumn(database, "price_recommendations", "tb1_percent", "REAL");
+
+  ensureColumn(database, "agent_scraper_jobs", "codex_output", "TEXT");
+  ensureColumn(database, "agent_scraper_jobs", "typecheck_output", "TEXT");
+  ensureColumn(database, "agent_scraper_jobs", "diff_patch", "TEXT");
+  ensureColumn(database, "agent_scraper_jobs", "changed_files", "TEXT");
 
   database.exec(`
     UPDATE pricing_rules

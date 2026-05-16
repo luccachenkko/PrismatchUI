@@ -6,6 +6,8 @@ dist/
 build/
 *.log
 data/
+.agent-worktrees/
+.agent/jobs/
 
 # Generated reports and runtime data
 output/**
